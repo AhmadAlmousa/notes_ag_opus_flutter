@@ -6,6 +6,8 @@ class Note {
     this.templateVersion = 1,
     required this.category,
     required this.filename,
+    this.title,
+    this.icon,
     this.tags = const [],
     this.records = const [],
     this.createdAt,
@@ -17,6 +19,8 @@ class Note {
   final int templateVersion;
   final String category;
   final String filename;
+  final String? title;
+  final String? icon;
   final List<String> tags;
   final List<Map<String, dynamic>> records;
   final DateTime? createdAt;
@@ -35,6 +39,8 @@ class Note {
       templateVersion: frontmatter['template_version'] as int? ?? 1,
       category: category,
       filename: filename,
+      title: frontmatter['title'] as String?,
+      icon: frontmatter['icon'] as String?,
       tags: (frontmatter['tags'] as List<dynamic>?)?.cast<String>() ?? [],
       records: data.map((r) => Map<String, dynamic>.from(r as Map)).toList(),
     );
@@ -49,6 +55,12 @@ class Note {
     buffer.writeln('template_id: $templateId');
     buffer.writeln('template_version: $templateVersion');
     buffer.writeln('id: $id');
+    if (title != null && title!.isNotEmpty) {
+      buffer.writeln('title: $title');
+    }
+    if (icon != null && icon!.isNotEmpty) {
+      buffer.writeln('icon: $icon');
+    }
     if (tags.isNotEmpty) {
       buffer.writeln('tags:');
       for (final tag in tags) {
@@ -98,6 +110,8 @@ class Note {
     int? templateVersion,
     String? category,
     String? filename,
+    String? title,
+    String? icon,
     List<String>? tags,
     List<Map<String, dynamic>>? records,
     DateTime? createdAt,
@@ -109,6 +123,8 @@ class Note {
       templateVersion: templateVersion ?? this.templateVersion,
       category: category ?? this.category,
       filename: filename ?? this.filename,
+      title: title ?? this.title,
+      icon: icon ?? this.icon,
       tags: tags ?? this.tags,
       records: records ?? this.records,
       createdAt: createdAt ?? this.createdAt,
@@ -116,8 +132,11 @@ class Note {
     );
   }
 
-  /// Returns display title based on primary field or filename.
+  /// Returns display title based on title, primary field, or filename.
   String getDisplayTitle([String? primaryField]) {
+    // Prefer explicit title
+    if (title != null && title!.isNotEmpty) return title!;
+
     if (records.isEmpty) return filename.replaceAll('.md', '');
     final firstRecord = records.first;
 

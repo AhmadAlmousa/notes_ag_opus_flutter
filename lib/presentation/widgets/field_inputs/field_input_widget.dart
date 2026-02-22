@@ -7,6 +7,8 @@ import 'password_field_input.dart';
 import 'date_field_input.dart';
 import 'dropdown_field_input.dart';
 import 'ip_field_input.dart';
+import 'regex_field_input.dart';
+import 'custom_label_field_input.dart';
 
 /// Generic field input widget that delegates to specific field types.
 class FieldInputWidget extends StatelessWidget {
@@ -100,6 +102,28 @@ class FieldInputWidget extends StatelessWidget {
           field: field,
           value: value?.toString() ?? '',
           onChanged: onChanged,
+          hasError: hasError,
+        );
+
+      case FieldType.regex:
+        return RegexFieldInput(
+          field: field,
+          value: value?.toString() ?? '',
+          onChanged: onChanged,
+          hasError: hasError,
+        );
+
+      case FieldType.customLabel:
+        // Custom label stores two values: {fieldId}_label and {fieldId}_value
+        // The parent passes the whole record map as value for this field type
+        final labelVal = (value is Map ? value['label']?.toString() : null) ?? '';
+        final textVal = (value is Map ? value['value']?.toString() : null) ?? '';
+        return CustomLabelFieldInput(
+          field: field,
+          labelValue: labelVal,
+          textValue: textVal,
+          onLabelChanged: (l) => onChanged({'label': l, 'value': textVal}),
+          onValueChanged: (v) => onChanged({'label': labelVal, 'value': v}),
           hasError: hasError,
         );
     }

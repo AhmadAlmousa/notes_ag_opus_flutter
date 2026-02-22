@@ -4,6 +4,7 @@ import 'package:shared_preferences/shared_preferences.dart';
 /// Service for persisting data using web storage.
 class StorageService {
   StorageService._();
+  StorageService.internal();
   static StorageService? _instance;
   static SharedPreferences? _prefs;
 

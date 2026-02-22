@@ -52,6 +52,42 @@ class _TemplateListScreenState extends State<TemplateListScreen>
     _animationController.forward(from: 0);
   }
 
+  Future<void> _deleteTemplate(Template template) async {
+    final confirmed = await showDialog<bool>(
+      context: context,
+      builder: (ctx) => AlertDialog(
+        title: const Text('Delete Template'),
+        content: Text(
+          'Are you sure you want to delete "${template.name}"? This cannot be undone.',
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.of(ctx).pop(false),
+            child: const Text('Cancel'),
+          ),
+          TextButton(
+            onPressed: () => Navigator.of(ctx).pop(true),
+            style: TextButton.styleFrom(foregroundColor: Colors.red),
+            child: const Text('Delete'),
+          ),
+        ],
+      ),
+    );
+
+    if (confirmed == true && mounted) {
+      await AppState.instance.templateRepository.delete(template.templateId);
+      _loadData();
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(
+            content: Text('"${template.name}" deleted'),
+            behavior: SnackBarBehavior.floating,
+          ),
+        );
+      }
+    }
+  }
+
   @override
   Widget build(BuildContext context) {
     final theme = Theme.of(context);
@@ -126,6 +162,7 @@ class _TemplateListScreenState extends State<TemplateListScreen>
                                   onCreateNote: () => context.push(
                                     '/new-note/${_templates[index].templateId}',
                                   ),
+                                  onDelete: () => _deleteTemplate(_templates[index]),
                                 ),
                               ),
                             );
@@ -211,11 +248,13 @@ class _TemplateListTile extends StatelessWidget {
     required this.template,
     required this.onTap,
     required this.onCreateNote,
+    required this.onDelete,
   });
 
   final Template template;
   final VoidCallback onTap;
   final VoidCallback onCreateNote;
+  final VoidCallback onDelete;
 
   @override
   Widget build(BuildContext context) {
@@ -345,6 +384,30 @@ class _TemplateListTile extends StatelessWidget {
                   ),
                 ),
               ),
+              // Menu
+              PopupMenuButton(
+                icon: Icon(
+                  Icons.more_vert,
+                  color: theme.colorScheme.onSurfaceVariant,
+                  size: 20,
+                ),
+                padding: EdgeInsets.zero,
+                itemBuilder: (context) => [
+                  const PopupMenuItem(
+                    value: 'delete',
+                    child: Row(
+                      children: [
+                        Icon(Icons.delete_outline, color: Colors.red, size: 20),
+                        SizedBox(width: 8),
+                        Text('Delete', style: TextStyle(color: Colors.red)),
+                      ],
+                    ),
+                  ),
+                ],
+                onSelected: (value) {
+                  if (value == 'delete') onDelete();
+                },
+              ),
             ],
           ),
         ),
@@ -358,8 +421,6 @@ class _TemplateListTile extends StatelessWidget {
         return Icons.view_agenda_rounded;
       case TemplateLayout.table:
         return Icons.table_chart_rounded;
-      case TemplateLayout.list:
-        return Icons.format_list_bulleted_rounded;
       case TemplateLayout.grid:
         return Icons.grid_view_rounded;
     }

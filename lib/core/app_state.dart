@@ -3,6 +3,8 @@ import 'package:flutter/material.dart';
 import '../data/repositories/note_repository.dart';
 import '../data/repositories/template_repository.dart';
 import '../data/services/storage_service.dart';
+import '../data/services/file_system_storage_service.dart';
+import '../data/services/fs_interop.dart';
 
 /// Global app state and dependency container.
 class AppState extends ChangeNotifier {
@@ -19,6 +21,10 @@ class AppState extends ChangeNotifier {
   bool _initialized = false;
   bool get initialized => _initialized;
 
+  /// Whether storage has been configured (first-run completed).
+  bool _storageConfigured = false;
+  bool get storageConfigured => _storageConfigured;
+
   late StorageService _storage;
   late TemplateRepository _templateRepository;
   late NoteRepository _noteRepository;
@@ -31,11 +37,41 @@ class AppState extends ChangeNotifier {
   ThemeMode _themeMode = ThemeMode.system;
   ThemeMode get themeMode => _themeMode;
 
+  /// Storage info
+  String get storageType => FileSystemInterop.currentStorageType;
+  String? get storageDirectoryName => FileSystemInterop.directoryName;
+
   /// Initializes the app state.
   Future<void> initialize() async {
     if (_initialized) return;
 
-    _storage = await StorageService.getInstance();
+    // Try to reconnect to a previously configured file system storage
+    final reconnected = await FileSystemStorageService.tryReconnect();
+
+    if (reconnected) {
+      // Use file system storage
+      final fsStorage = await FileSystemStorageService.getInstance();
+      await fsStorage.refreshCaches();
+      _storage = fsStorage;
+      _storageConfigured = true;
+    } else {
+      // Check if we had a configured storage type
+      final configType = FileSystemStorageService.configuredStorageType;
+      if (configType == 'local') {
+        // Using localStorage fallback
+        _storage = await StorageService.getInstance();
+        _storageConfigured = true;
+      } else if (configType != 'none') {
+        // Had FSA/OPFS but couldn't reconnect - fall back to localStorage
+        _storage = await StorageService.getInstance();
+        _storageConfigured = true;
+      } else {
+        // First run - no storage configured yet
+        _storage = await StorageService.getInstance();
+        _storageConfigured = false;
+      }
+    }
+
     _templateRepository = TemplateRepository(_storage);
     _noteRepository = NoteRepository(_storage);
 
@@ -52,6 +88,29 @@ class AppState extends ChangeNotifier {
     await _seedSampleData();
 
     _initialized = true;
+    notifyListeners();
+  }
+
+  /// Complete storage setup with the chosen type.
+  Future<void> completeStorageSetup(String storageType) async {
+    await FileSystemStorageService.setConfigured(storageType);
+    _storageConfigured = true;
+
+    if (storageType == 'fsa' || storageType == 'opfs') {
+      final fsStorage = await FileSystemStorageService.getInstance();
+      await fsStorage.refreshCaches();
+      _storage = fsStorage;
+    } else {
+      await FileSystemStorageService.setConfigured('local');
+      _storage = await StorageService.getInstance();
+    }
+
+    _templateRepository = TemplateRepository(_storage);
+    _noteRepository = NoteRepository(_storage);
+
+    // Seed sample data for new storage
+    await _seedSampleData();
+
     notifyListeners();
   }
 

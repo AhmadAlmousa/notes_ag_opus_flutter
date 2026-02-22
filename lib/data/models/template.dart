@@ -4,7 +4,6 @@ import 'field.dart';
 enum TemplateLayout {
   cards,
   table,
-  list,
   grid,
 }
 
@@ -15,8 +14,6 @@ extension TemplateLayoutExtension on TemplateLayout {
         return 'Cards';
       case TemplateLayout.table:
         return 'Table';
-      case TemplateLayout.list:
-        return 'List';
       case TemplateLayout.grid:
         return 'Grid';
     }
@@ -28,8 +25,6 @@ extension TemplateLayoutExtension on TemplateLayout {
         return 'view_agenda';
       case TemplateLayout.table:
         return 'table_chart';
-      case TemplateLayout.list:
-        return 'view_list';
       case TemplateLayout.grid:
         return 'grid_view';
     }
@@ -181,7 +176,8 @@ class Template {
     buffer.writeln('fields:');
     for (final field in fields) {
       buffer.writeln('  - id: ${field.id}');
-      buffer.writeln('    type: ${field.type.name}');
+      final typeName = field.type == FieldType.customLabel ? 'custom_label' : field.type.name;
+      buffer.writeln('    type: $typeName');
       buffer.writeln('    label: ${field.label}');
       if (field.required) {
         buffer.writeln('    required: true');
@@ -199,6 +195,12 @@ class Template {
           for (final opt in opts.dropdownOptions!) {
             buffer.writeln('      - $opt');
           }
+        }
+        if (opts.regexPattern != null) {
+          buffer.writeln('    regex_pattern: ${opts.regexPattern}');
+        }
+        if (opts.regexHint != null) {
+          buffer.writeln('    regex_hint: ${opts.regexHint}');
         }
       }
     }

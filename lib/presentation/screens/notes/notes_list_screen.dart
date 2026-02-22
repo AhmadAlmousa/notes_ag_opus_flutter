@@ -37,6 +37,24 @@ class _NotesListScreenState extends State<NotesListScreen>
   }
 
   @override
+  void didUpdateWidget(covariant NotesListScreen oldWidget) {
+    super.didUpdateWidget(oldWidget);
+    if (oldWidget.category != widget.category) {
+      _selectedCategory = widget.category ?? 'all';
+      _loadData();
+    }
+  }
+
+  @override
+  void didChangeDependencies() {
+    super.didChangeDependencies();
+    // Reload data every time this screen becomes visible
+    if (!_isLoading) {
+      _loadData();
+    }
+  }
+
+  @override
   void dispose() {
     _animationController.dispose();
     super.dispose();
@@ -170,6 +188,9 @@ class _NotesListScreenState extends State<NotesListScreen>
                               child: NoteCard(
                                 note: _notes[index],
                                 onTap: () => _openNote(_notes[index]),
+                                templateName: AppState.instance.templateRepository
+                                    .getById(_notes[index].templateId)
+                                    ?.name,
                               ),
                             ),
                           );
@@ -243,7 +264,9 @@ class _NotesListScreenState extends State<NotesListScreen>
     );
   }
 
-  void _openNote(Note note) {
-    context.push('/notes/${note.category}/${note.filename}');
+  Future<void> _openNote(Note note) async {
+    await context.push('/notes/${note.category}/${note.filename}');
+    // Reload when returning from view/edit
+    _loadData();
   }
 }

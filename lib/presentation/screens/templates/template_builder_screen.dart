@@ -345,8 +345,6 @@ class _TemplateBuilderScreenState extends State<TemplateBuilderScreen> {
         return Icons.view_agenda_rounded;
       case TemplateLayout.table:
         return Icons.table_chart_rounded;
-      case TemplateLayout.list:
-        return Icons.format_list_bulleted_rounded;
       case TemplateLayout.grid:
         return Icons.grid_view_rounded;
     }
@@ -376,11 +374,13 @@ class _FieldCardState extends State<_FieldCard> {
   late TextEditingController _idController;
   late TextEditingController _dropdownOptionsController;
   bool _isExpanded = false;
+  bool _idManuallyEdited = false;
 
   @override
   void initState() {
     super.initState();
     _initControllers();
+    _labelController.addListener(_onLabelChanged);
   }
 
   void _initControllers() {
@@ -391,20 +391,35 @@ class _FieldCardState extends State<_FieldCard> {
     );
   }
 
+  void _onLabelChanged() {
+    final label = _labelController.text;
+    if (!_idManuallyEdited) {
+      final newId = Sanitizers.labelToId(label);
+      _idController.text = newId;
+      widget.onUpdate(widget.field.copyWith(label: label, id: newId));
+    } else {
+      widget.onUpdate(widget.field.copyWith(label: label));
+    }
+  }
+
   @override
   void didUpdateWidget(covariant _FieldCard oldWidget) {
     super.didUpdateWidget(oldWidget);
-    // Only update controllers if the field id changed (different field)
-    if (oldWidget.field.id != widget.field.id) {
+    // Only update controllers if a different field was swapped in (reorder)
+    if (oldWidget.index != widget.index) {
+      _labelController.removeListener(_onLabelChanged);
       _labelController.text = widget.field.label;
       _idController.text = widget.field.id;
       _dropdownOptionsController.text =
           widget.field.options?.dropdownOptions?.join(', ') ?? '';
+      _idManuallyEdited = false;
+      _labelController.addListener(_onLabelChanged);
     }
   }
 
   @override
   void dispose() {
+    _labelController.removeListener(_onLabelChanged);
     _labelController.dispose();
     _idController.dispose();
     _dropdownOptionsController.dispose();
@@ -525,26 +540,9 @@ class _FieldCardState extends State<_FieldCard> {
           const SizedBox(height: 8),
           TextField(
             controller: _labelController,
-            onEditingComplete: () {
-              // Only update parent when done editing to avoid text selection issues
-              final value = _labelController.text;
-              final newId = Sanitizers.labelToId(value);
-              _idController.text = newId;
-              _updateField(widget.field.copyWith(
-                label: value,
-                id: newId,
-              ));
-            },
-            onSubmitted: (value) {
-              final newId = Sanitizers.labelToId(value);
-              _idController.text = newId;
-              _updateField(widget.field.copyWith(
-                label: value,
-                id: newId,
-              ));
-            },
             decoration: const InputDecoration(
-              labelText: 'Label',
+              labelText: 'Field Name',
+              hintText: 'e.g. Service Name',
               isDense: true,
             ),
           ),
@@ -552,11 +550,22 @@ class _FieldCardState extends State<_FieldCard> {
           TextField(
             controller: _idController,
             onChanged: (value) {
+              _idManuallyEdited = true;
               _updateField(widget.field.copyWith(id: value));
             },
-            decoration: const InputDecoration(
+            decoration: InputDecoration(
               labelText: 'Field ID',
               isDense: true,
+              helperText: !_idManuallyEdited
+                  ? 'Auto-generated from field name'
+                  : null,
+              helperStyle: TextStyle(
+                fontSize: 11,
+                color: Theme.of(context)
+                    .colorScheme
+                    .onSurfaceVariant
+                    .withValues(alpha: 0.6),
+              ),
             ),
           ),
           const SizedBox(height: 12),
@@ -792,6 +801,46 @@ class _FieldCardState extends State<_FieldCard> {
           ),
         ];
 
+      case FieldType.regex:
+        return [
+          const SizedBox(height: 12),
+          TextFormField(
+            initialValue: widget.field.options?.regexPattern,
+            onChanged: (value) {
+              _updateField(widget.field.copyWith(
+                options: FieldOptions(
+                  regexPattern: value.isEmpty ? null : value,
+                  regexHint: widget.field.options?.regexHint,
+                ),
+              ));
+            },
+            decoration: const InputDecoration(
+              labelText: 'Regex Pattern',
+              hintText: r'e.g., ^[A-Z]{2}\d{4}$',
+              helperText: 'Regular expression to validate input',
+              isDense: true,
+            ),
+          ),
+          const SizedBox(height: 12),
+          TextFormField(
+            initialValue: widget.field.options?.regexHint,
+            onChanged: (value) {
+              _updateField(widget.field.copyWith(
+                options: FieldOptions(
+                  regexPattern: widget.field.options?.regexPattern,
+                  regexHint: value.isEmpty ? null : value,
+                ),
+              ));
+            },
+            decoration: const InputDecoration(
+              labelText: 'Format Hint',
+              hintText: 'e.g., Must be 2 letters + 4 digits',
+              helperText: 'Shown to the user when validation fails',
+              isDense: true,
+            ),
+          ),
+        ];
+
       default:
         return [];
     }
@@ -817,6 +866,10 @@ class _FieldCardState extends State<_FieldCard> {
         return Icons.dns;
       case FieldType.password:
         return Icons.lock;
+      case FieldType.regex:
+        return Icons.rule;
+      case FieldType.customLabel:
+        return Icons.label_outline;
     }
   }
 }

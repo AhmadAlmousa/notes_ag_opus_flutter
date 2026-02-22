@@ -216,6 +216,9 @@ class _DashboardScreenState extends State<DashboardScreen>
                                 child: NoteCard(
                                   note: _recentNotes[index],
                                   onTap: () => _openNote(_recentNotes[index]),
+                                  templateName: AppState.instance.templateRepository
+                                      .getById(_recentNotes[index].templateId)
+                                      ?.name,
                                 ),
                               ),
                             );
@@ -460,8 +463,22 @@ class _DashboardScreenState extends State<DashboardScreen>
         scrollDirection: Axis.horizontal,
         physics: const BouncingScrollPhysics(),
         padding: const EdgeInsets.symmetric(horizontal: 20),
-        itemCount: _categories.length,
+        itemCount: _categories.length + 1, // +1 for edit pill
         itemBuilder: (context, index) {
+          // Last item = edit pill
+          if (index == _categories.length) {
+            return Padding(
+              padding: const EdgeInsets.only(left: 4),
+              child: ActionChip(
+                avatar: const Icon(Icons.edit, size: 16),
+                label: const Text('Edit', style: TextStyle(fontSize: 12)),
+                onPressed: () => _showEditCategoriesDialog(context),
+                backgroundColor: theme.colorScheme.surfaceContainerHighest,
+                padding: const EdgeInsets.symmetric(horizontal: 4),
+              ),
+            );
+          }
+
           final category = _categories[index];
           final isSelected = category == _selectedCategory;
 
@@ -500,6 +517,33 @@ class _DashboardScreenState extends State<DashboardScreen>
           );
         },
       ),
+    );
+  }
+
+  void _showEditCategoriesDialog(BuildContext context) {
+    final noteRepo = AppState.instance.noteRepository;
+    // Get only real categories (not 'all')
+    final cats = noteRepo.getCategories();
+
+    showDialog(
+      context: context,
+      builder: (ctx) {
+        return _EditCategoriesDialog(
+          categories: cats,
+          onRename: (oldName, newName) async {
+            await noteRepo.renameCategory(oldName, newName);
+            _loadData();
+          },
+          onDelete: (name) async {
+            await noteRepo.deleteCategory(name);
+            _loadData();
+          },
+          onAdd: (name) async {
+            await noteRepo.addCategory(name);
+            _loadData();
+          },
+        );
+      },
     );
   }
 
@@ -728,5 +772,187 @@ class _TemplateOption extends StatelessWidget {
         ),
       ),
     );
+  }
+}
+
+/// Dialog for editing categories (rename / delete / add).
+class _EditCategoriesDialog extends StatefulWidget {
+  const _EditCategoriesDialog({
+    required this.categories,
+    required this.onRename,
+    required this.onDelete,
+    required this.onAdd,
+  });
+
+  final List<String> categories;
+  final Future<void> Function(String oldName, String newName) onRename;
+  final Future<void> Function(String name) onDelete;
+  final Future<void> Function(String name) onAdd;
+
+  @override
+  State<_EditCategoriesDialog> createState() => _EditCategoriesDialogState();
+}
+
+class _EditCategoriesDialogState extends State<_EditCategoriesDialog> {
+  late List<String> _cats;
+
+  @override
+  void initState() {
+    super.initState();
+    _cats = List.from(widget.categories);
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final theme = Theme.of(context);
+
+    return AlertDialog(
+      title: const Text('Edit Categories'),
+      content: SizedBox(
+        width: 320,
+        child: _cats.isEmpty
+            ? const Center(child: Text('No categories'))
+            : ListView.builder(
+                shrinkWrap: true,
+                itemCount: _cats.length,
+                itemBuilder: (context, index) {
+                  final cat = _cats[index];
+                  return ListTile(
+                    dense: true,
+                    title: Text(
+                      cat[0].toUpperCase() + cat.substring(1),
+                      style: theme.textTheme.bodyMedium,
+                    ),
+                    trailing: Row(
+                      mainAxisSize: MainAxisSize.min,
+                      children: [
+                        IconButton(
+                          icon: const Icon(Icons.edit, size: 18),
+                          onPressed: () => _renameCategory(cat),
+                          tooltip: 'Rename',
+                        ),
+                        IconButton(
+                          icon: const Icon(Icons.delete_outline,
+                              size: 18, color: Colors.red),
+                          onPressed: () => _deleteCategory(cat),
+                          tooltip: 'Delete',
+                        ),
+                      ],
+                    ),
+                  );
+                },
+              ),
+      ),
+      actions: [
+        TextButton.icon(
+          onPressed: _addCategory,
+          icon: const Icon(Icons.add, size: 18),
+          label: const Text('Add'),
+        ),
+        TextButton(
+          onPressed: () => Navigator.pop(context),
+          child: const Text('Close'),
+        ),
+      ],
+    );
+  }
+
+  void _addCategory() async {
+    final controller = TextEditingController();
+    final name = await showDialog<String>(
+      context: context,
+      builder: (ctx) => AlertDialog(
+        title: const Text('Add Category'),
+        content: TextField(
+          controller: controller,
+          autofocus: true,
+          decoration: const InputDecoration(
+            labelText: 'Category name',
+            isDense: true,
+          ),
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(ctx),
+            child: const Text('Cancel'),
+          ),
+          TextButton(
+            onPressed: () => Navigator.pop(ctx, controller.text.trim()),
+            child: const Text('Add'),
+          ),
+        ],
+      ),
+    );
+
+    if (name != null && name.isNotEmpty) {
+      final normalized = name.toLowerCase();
+      if (!_cats.contains(normalized)) {
+        await widget.onAdd(normalized);
+        setState(() => _cats.add(normalized));
+      }
+    }
+  }
+
+  void _renameCategory(String oldName) async {
+    final controller = TextEditingController(text: oldName);
+    final newName = await showDialog<String>(
+      context: context,
+      builder: (ctx) => AlertDialog(
+        title: const Text('Rename Category'),
+        content: TextField(
+          controller: controller,
+          autofocus: true,
+          decoration: const InputDecoration(
+            labelText: 'New name',
+            isDense: true,
+          ),
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(ctx),
+            child: const Text('Cancel'),
+          ),
+          TextButton(
+            onPressed: () => Navigator.pop(ctx, controller.text.trim()),
+            child: const Text('Rename'),
+          ),
+        ],
+      ),
+    );
+
+    if (newName != null && newName.isNotEmpty && newName != oldName) {
+      await widget.onRename(oldName, newName.toLowerCase());
+      setState(() {
+        final idx = _cats.indexOf(oldName);
+        if (idx >= 0) _cats[idx] = newName.toLowerCase();
+      });
+    }
+  }
+
+  void _deleteCategory(String name) async {
+    final confirm = await showDialog<bool>(
+      context: context,
+      builder: (ctx) => AlertDialog(
+        title: const Text('Delete Category?'),
+        content: Text(
+            'All notes in "$name" will be deleted. This cannot be undone.'),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(ctx, false),
+            child: const Text('Cancel'),
+          ),
+          TextButton(
+            onPressed: () => Navigator.pop(ctx, true),
+            child:
+                const Text('Delete', style: TextStyle(color: Colors.red)),
+          ),
+        ],
+      ),
+    );
+
+    if (confirm == true) {
+      await widget.onDelete(name);
+      setState(() => _cats.remove(name));
+    }
   }
 }

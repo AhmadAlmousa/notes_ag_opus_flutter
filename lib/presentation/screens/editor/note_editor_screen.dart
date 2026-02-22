@@ -7,6 +7,7 @@ import '../../../core/utils/sanitizers.dart';
 import '../../../data/models/field.dart';
 import '../../../data/models/note.dart';
 import '../../../data/models/template.dart';
+import '../../widgets/common/emoji_picker_dialog.dart';
 import '../../widgets/field_inputs/field_input_widget.dart';
 
 /// Note editor screen with form-based entry.
@@ -36,6 +37,9 @@ class _NoteEditorScreenState extends State<NoteEditorScreen> {
   late String _category;
   late List<String> _tags;
   late TextEditingController _titleController;
+  String? _icon;
+  String? _originalCategory;
+  String? _originalFilename;
   Set<String> _validationErrors = {};
 
   @override
@@ -66,8 +70,12 @@ class _NoteEditorScreenState extends State<NoteEditorScreen> {
         _category = _note!.category;
         _tags = List.from(_note!.tags);
         _isNew = false;
-        // Extract title from filename
-        _titleController.text = _note!.filename.replaceAll('_', ' ');
+        _icon = _note!.icon;
+        _originalCategory = _note!.category;
+        _originalFilename = _note!.filename;
+        // Use explicit title if available, otherwise derive from filename
+        _titleController.text = _note!.title ?? 
+            _note!.getDisplayTitle(_template?.display.primaryField);
       }
     } else if (widget.templateId != null) {
       // Creating new note
@@ -170,10 +178,13 @@ class _NoteEditorScreenState extends State<NoteEditorScreen> {
       return;
     }
 
-    // Generate filename from title
-    final filename = Sanitizers.toFilename(_titleController.text.trim());
+    // Generate filename from title using underscores (no spaces)
+    final title = _titleController.text.trim();
+    final filename = '${Sanitizers.toFilename(title)}.md';
 
     final updatedNote = _note!.copyWith(
+      title: title,
+      icon: _icon,
       filename: filename,
       category: _category,
       records: _records,
@@ -181,7 +192,17 @@ class _NoteEditorScreenState extends State<NoteEditorScreen> {
       updatedAt: DateTime.now(),
     );
 
-    await AppState.instance.noteRepository.save(updatedNote);
+    final repo = AppState.instance.noteRepository;
+    await repo.save(updatedNote);
+
+    // Delete old file if category or filename changed (prevents duplicates)
+    if (!_isNew && _originalCategory != null && _originalFilename != null) {
+      final categoryChanged = _originalCategory != _category;
+      final filenameChanged = _originalFilename != filename;
+      if (categoryChanged || filenameChanged) {
+        await repo.delete(_originalCategory!, _originalFilename!);
+      }
+    }
 
     if (mounted) {
       ScaffoldMessenger.of(context).showSnackBar(
@@ -347,20 +368,63 @@ class _NoteEditorScreenState extends State<NoteEditorScreen> {
           ),
         ),
         const SizedBox(height: 8),
-        TextField(
-          controller: _titleController,
-          onChanged: (_) => _markChanged(),
-          decoration: InputDecoration(
-            hintText: 'Enter a title for this note',
-            prefixIcon: const Icon(Icons.title),
-            filled: true,
-            fillColor: theme.colorScheme.surfaceContainerHighest.withValues(alpha: 0.5),
-          ),
-          textInputAction: TextInputAction.next,
+        Row(
+          children: [
+            // Emoji icon button
+            GestureDetector(
+              onTap: () async {
+                final emoji = await EmojiPickerDialog.show(
+                  context,
+                  currentEmoji: _icon,
+                );
+                if (emoji != null) {
+                  setState(() {
+                    _icon = emoji.isEmpty ? null : emoji;
+                    _hasChanges = true;
+                  });
+                }
+              },
+              child: Container(
+                width: 52,
+                height: 52,
+                decoration: BoxDecoration(
+                  color: theme.colorScheme.surfaceContainerHighest
+                      .withValues(alpha: 0.5),
+                  borderRadius: BorderRadius.circular(12),
+                  border: Border.all(
+                    color: theme.colorScheme.outline.withValues(alpha: 0.2),
+                  ),
+                ),
+                child: Center(
+                  child: _icon != null && _icon!.isNotEmpty
+                      ? Text(_icon!, style: const TextStyle(fontSize: 24))
+                      : Icon(
+                          Icons.emoji_emotions_outlined,
+                          color: theme.colorScheme.onSurfaceVariant,
+                        ),
+                ),
+              ),
+            ),
+            const SizedBox(width: 12),
+            // Title text field
+            Expanded(
+              child: TextField(
+                controller: _titleController,
+                onChanged: (_) => _markChanged(),
+                decoration: InputDecoration(
+                  hintText: 'Enter a title for this note',
+                  filled: true,
+                  fillColor: theme.colorScheme.surfaceContainerHighest
+                      .withValues(alpha: 0.5),
+                ),
+                textInputAction: TextInputAction.next,
+              ),
+            ),
+          ],
         ),
         const SizedBox(height: 4),
         Text(
-          'This will be used as the note filename',
+          'Tap the icon to set an emoji • Title is used as filename',
           style: theme.textTheme.bodySmall?.copyWith(
             color: theme.colorScheme.onSurfaceVariant,
           ),
@@ -529,12 +593,28 @@ class _RecordForm extends StatelessWidget {
             child: Column(
               children: fields.map((field) {
                 final hasError = validationErrors.contains('$index:${field.id}');
+                // For customLabel fields, assemble a Map from flat keys
+                dynamic fieldValue = record[field.id];
+                if (field.type == FieldType.customLabel) {
+                  fieldValue = {
+                    'label': record['${field.id}_label']?.toString() ?? '',
+                    'value': record['${field.id}_value']?.toString() ?? '',
+                  };
+                }
                 return Padding(
                   padding: const EdgeInsets.only(bottom: 16),
                   child: FieldInputWidget(
                     field: field,
-                    value: record[field.id],
-                    onChanged: (value) => onFieldChanged(field.id, value),
+                    value: fieldValue,
+                    onChanged: (value) {
+                      if (field.type == FieldType.customLabel && value is Map) {
+                        // Split back to flat keys
+                        onFieldChanged('${field.id}_label', value['label'] ?? '');
+                        onFieldChanged('${field.id}_value', value['value'] ?? '');
+                      } else {
+                        onFieldChanged(field.id, value);
+                      }
+                    },
                     hasError: hasError,
                   ),
                 );

@@ -128,7 +128,47 @@ class _NoteViewScreenState extends State<NoteViewScreen>
 
     return Scaffold(
       appBar: AppBar(
-        title: Text(_note!.getDisplayTitle(_template?.display.primaryField)),
+        title: _buildAppBarTitle(),
+        bottom: PreferredSize(
+          preferredSize: const Size.fromHeight(28),
+          child: Padding(
+            padding: const EdgeInsets.only(left: 16, bottom: 8),
+            child: Row(
+              children: [
+                Container(
+                  padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 2),
+                  decoration: BoxDecoration(
+                    color: AppTheme.primaryColor.withValues(alpha: 0.1),
+                    borderRadius: BorderRadius.circular(4),
+                  ),
+                  child: Text(
+                    _note!.category.toUpperCase(),
+                    style: TextStyle(
+                      color: AppTheme.primaryColor,
+                      fontSize: 10,
+                      fontWeight: FontWeight.w700,
+                    ),
+                  ),
+                ),
+                const SizedBox(width: 6),
+                Container(
+                  padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 2),
+                  decoration: BoxDecoration(
+                    color: Theme.of(context).colorScheme.surfaceContainerHighest,
+                    borderRadius: BorderRadius.circular(4),
+                  ),
+                  child: Text(
+                    _template?.name ?? _note!.templateId,
+                    style: Theme.of(context).textTheme.bodySmall?.copyWith(
+                      fontWeight: FontWeight.w600,
+                      fontSize: 10,
+                    ),
+                  ),
+                ),
+              ],
+            ),
+          ),
+        ),
         actions: [
           // Share button
           IconButton(
@@ -146,9 +186,12 @@ class _NoteViewScreenState extends State<NoteViewScreen>
           IconButton(
             icon: const Icon(Icons.edit),
             tooltip: 'Edit',
-            onPressed: () => context.push(
-              '/notes/${widget.category}/${widget.filename}/edit',
-            ),
+            onPressed: () async {
+              await context.push(
+                '/notes/${widget.category}/${widget.filename}/edit',
+              );
+              _loadData();
+            },
           ),
           PopupMenuButton(
             itemBuilder: (context) => [
@@ -156,7 +199,7 @@ class _NoteViewScreenState extends State<NoteViewScreen>
                 value: 'delete',
                 child: Row(
                   children: [
-                    Icon(Icons.delete, color: Colors.red),
+                    Icon(Icons.delete, color: Colors.red, size: 20),
                     SizedBox(width: 8),
                     Text('Delete', style: TextStyle(color: Colors.red)),
                   ],
@@ -200,6 +243,26 @@ class _NoteViewScreenState extends State<NoteViewScreen>
     );
   }
 
+  /// Builds the AppBar title with icon, type, and category.
+  Widget _buildAppBarTitle() {
+    final hasEmoji = _note!.icon != null && _note!.icon!.isNotEmpty;
+    return Row(
+      mainAxisSize: MainAxisSize.min,
+      children: [
+        if (hasEmoji) ...[
+          Text(_note!.icon!, style: const TextStyle(fontSize: 22)),
+          const SizedBox(width: 8),
+        ],
+        Flexible(
+          child: Text(
+            _note!.getDisplayTitle(_template?.display.primaryField),
+            overflow: TextOverflow.ellipsis,
+          ),
+        ),
+      ],
+    );
+  }
+
   Widget _buildBody() {
     final theme = Theme.of(context);
     final layout = _template?.layout ?? TemplateLayout.cards;
@@ -210,15 +273,17 @@ class _NoteViewScreenState extends State<NoteViewScreen>
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
-          // Note info
-          _buildInfoHeader(theme),
-          const SizedBox(height: 20),
+          // Tags and record count
+          _buildTagsAndCount(theme),
+          const SizedBox(height: 16),
 
           // Records based on layout type
           if (_note!.records.isEmpty)
             _buildEmptyRecords(theme)
           else if (layout == TemplateLayout.table)
             _buildTableLayout(theme)
+          else if (layout == TemplateLayout.grid)
+            _buildGridLayout(theme)
           else
             _buildRecordsList(theme),
         ],
@@ -228,7 +293,22 @@ class _NoteViewScreenState extends State<NoteViewScreen>
 
   Widget _buildTableLayout(ThemeData theme) {
     final fields = _template?.fields ?? [];
-    
+
+    // Build column headers — for customLabel fields, show user-defined label from first record
+    final columns = <DataColumn>[];
+    for (final field in fields) {
+      String colLabel = field.label;
+      if (field.type == FieldType.customLabel && _note!.records.isNotEmpty) {
+        final firstLabel = _note!.records.first['${field.id}_label']?.toString();
+        if (firstLabel != null && firstLabel.isNotEmpty) {
+          colLabel = firstLabel;
+        }
+      }
+      columns.add(DataColumn(
+        label: Text(colLabel, style: const TextStyle(fontWeight: FontWeight.bold)),
+      ));
+    }
+
     return Container(
       decoration: BoxDecoration(
         color: theme.colorScheme.surface,
@@ -247,30 +327,18 @@ class _NoteViewScreenState extends State<NoteViewScreen>
             headingRowColor: WidgetStateProperty.all(
               AppTheme.primaryColor.withValues(alpha: 0.1),
             ),
-            columns: [
-              const DataColumn(
-                label: Text(
-                  '#',
-                  style: TextStyle(fontWeight: FontWeight.bold),
-                ),
-              ),
-              ...fields.map((field) => DataColumn(
-                label: Text(
-                  field.label,
-                  style: const TextStyle(fontWeight: FontWeight.bold),
-                ),
-              )),
-            ],
+            columns: columns,
             rows: List.generate(_note!.records.length, (index) {
               final record = _note!.records[index];
               return DataRow(
                 cells: [
-                  DataCell(
-                    Text('${index + 1}'),
-                    onTap: () => _copyToClipboard('${index + 1}', 'Row number'),
-                  ),
                   ...fields.map((field) {
-                    final value = record[field.id]?.toString() ?? '';
+                    String value;
+                    if (field.type == FieldType.customLabel) {
+                      value = record['${field.id}_value']?.toString() ?? '';
+                    } else {
+                      value = record[field.id]?.toString() ?? '';
+                    }
                     return DataCell(
                       _buildTableCellContent(theme, field, value),
                       onTap: () => _copyToClipboard(value, field.label),
@@ -346,97 +414,44 @@ class _NoteViewScreenState extends State<NoteViewScreen>
     }
   }
 
-  Widget _buildInfoHeader(ThemeData theme) {
+  Widget _buildTagsAndCount(ThemeData theme) {
     return FadeTransition(
       opacity: _animationController,
-      child: Container(
-        padding: const EdgeInsets.all(16),
-        decoration: BoxDecoration(
-          color: theme.colorScheme.surface,
-          borderRadius: BorderRadius.circular(12),
-          border: Border.all(
-            color: theme.colorScheme.outline.withValues(alpha: 0.1),
-          ),
-          boxShadow: AppShadows.soft,
-        ),
-        child: Column(
-          crossAxisAlignment: CrossAxisAlignment.start,
-          children: [
-            Row(
-              children: [
-                // Category badge
-                Container(
-                  padding: const EdgeInsets.symmetric(
-                    horizontal: 8,
-                    vertical: 4,
-                  ),
-                  decoration: BoxDecoration(
-                    color: AppTheme.primaryColor.withValues(alpha: 0.1),
-                    borderRadius: BorderRadius.circular(6),
-                  ),
-                  child: Text(
-                    _note!.category.toUpperCase(),
-                    style: TextStyle(
-                      color: AppTheme.primaryColor,
-                      fontSize: 10,
-                      fontWeight: FontWeight.w700,
-                    ),
-                  ),
-                ),
-                const SizedBox(width: 8),
-                // Template badge
-                Container(
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          if (_note!.tags.isNotEmpty) ...[
+            Wrap(
+              spacing: 6,
+              runSpacing: 6,
+              children: _note!.tags.map((tag) {
+                return Container(
                   padding: const EdgeInsets.symmetric(
                     horizontal: 8,
                     vertical: 4,
                   ),
                   decoration: BoxDecoration(
                     color: theme.colorScheme.surfaceContainerHighest,
-                    borderRadius: BorderRadius.circular(6),
+                    borderRadius: BorderRadius.circular(12),
                   ),
                   child: Text(
-                    _template?.name ?? _note!.templateId,
+                    '#$tag',
                     style: theme.textTheme.bodySmall?.copyWith(
-                      fontWeight: FontWeight.w600,
+                      fontSize: 11,
                     ),
                   ),
-                ),
-              ],
+                );
+              }).toList(),
             ),
-            if (_note!.tags.isNotEmpty) ...[
-              const SizedBox(height: 12),
-              Wrap(
-                spacing: 6,
-                runSpacing: 6,
-                children: _note!.tags.map((tag) {
-                  return Container(
-                    padding: const EdgeInsets.symmetric(
-                      horizontal: 8,
-                      vertical: 4,
-                    ),
-                    decoration: BoxDecoration(
-                      color: theme.colorScheme.surfaceContainerHighest,
-                      borderRadius: BorderRadius.circular(12),
-                    ),
-                    child: Text(
-                      '#$tag',
-                      style: theme.textTheme.bodySmall?.copyWith(
-                        fontSize: 11,
-                      ),
-                    ),
-                  );
-                }).toList(),
-              ),
-            ],
-            const SizedBox(height: 12),
-            Text(
-              '${_note!.records.length} record${_note!.records.length != 1 ? 's' : ''}',
-              style: theme.textTheme.bodySmall?.copyWith(
-                color: theme.colorScheme.onSurfaceVariant,
-              ),
-            ),
+            const SizedBox(height: 8),
           ],
-        ),
+          Text(
+            '${_note!.records.length} record${_note!.records.length != 1 ? 's' : ''}',
+            style: theme.textTheme.bodySmall?.copyWith(
+              color: theme.colorScheme.onSurfaceVariant,
+            ),
+          ),
+        ],
       ),
     );
   }
@@ -495,6 +510,48 @@ class _NoteViewScreenState extends State<NoteViewScreen>
     );
   }
 
+  Widget _buildGridLayout(ThemeData theme) {
+    return LayoutBuilder(
+      builder: (context, constraints) {
+        // Adaptive columns: ~300px per column
+        final crossAxisCount = (constraints.maxWidth / 300).floor().clamp(1, 4);
+
+        return Wrap(
+          spacing: 12,
+          runSpacing: 12,
+          children: List.generate(_note!.records.length, (index) {
+            final record = _note!.records[index];
+            final width = (constraints.maxWidth - (crossAxisCount - 1) * 12) /
+                crossAxisCount;
+
+            return SizedBox(
+              width: width,
+              child: _buildRecordCard(theme, record, index),
+            );
+          }),
+        );
+      },
+    );
+  }
+
+  /// Returns the title for a record card based on the first field value.
+  String _getRecordTitle(Map<String, dynamic> record, int index) {
+    final fields = _template?.fields ?? [];
+    if (fields.isNotEmpty && record.isNotEmpty) {
+      final firstField = fields.first;
+      String? firstValue;
+      if (firstField.type == FieldType.customLabel) {
+        firstValue = record['${firstField.id}_value']?.toString();
+      } else {
+        firstValue = record[firstField.id]?.toString();
+      }
+      if (firstValue != null && firstValue.isNotEmpty) {
+        return firstValue;
+      }
+    }
+    return 'Record ${index + 1}';
+  }
+
   Widget _buildRecordCard(
     ThemeData theme,
     Map<String, dynamic> record,
@@ -522,40 +579,40 @@ class _NoteViewScreenState extends State<NoteViewScreen>
               ),
             ),
             child: Row(
-              mainAxisAlignment: MainAxisAlignment.spaceBetween,
               children: [
-                Row(
-                  children: [
-                    Container(
-                      width: 28,
-                      height: 28,
-                      decoration: BoxDecoration(
-                        color: AppTheme.primaryColor.withValues(alpha: 0.1),
-                        borderRadius: BorderRadius.circular(8),
-                      ),
-                      child: Center(
-                        child: Text(
-                          '${index + 1}',
-                          style: TextStyle(
-                            color: AppTheme.primaryColor,
-                            fontWeight: FontWeight.bold,
-                            fontSize: 12,
-                          ),
-                        ),
+                Container(
+                  width: 28,
+                  height: 28,
+                  decoration: BoxDecoration(
+                    color: AppTheme.primaryColor.withValues(alpha: 0.1),
+                    borderRadius: BorderRadius.circular(8),
+                  ),
+                  child: Center(
+                    child: Text(
+                      '${index + 1}',
+                      style: TextStyle(
+                        color: AppTheme.primaryColor,
+                        fontWeight: FontWeight.bold,
+                        fontSize: 12,
                       ),
                     ),
-                    const SizedBox(width: 10),
-                    Text(
-                      'Record ${index + 1}',
-                      style: theme.textTheme.titleSmall?.copyWith(
-                        fontWeight: FontWeight.w600,
-                      ),
+                  ),
+                ),
+                const SizedBox(width: 10),
+                Expanded(
+                  child: Text(
+                    _getRecordTitle(record, index),
+                    style: theme.textTheme.titleSmall?.copyWith(
+                      fontWeight: FontWeight.w600,
                     ),
-                  ],
+                    maxLines: 1,
+                    overflow: TextOverflow.ellipsis,
+                  ),
                 ),
                 // Action buttons from template
                 if (_template?.actions.isNotEmpty == true)
                   Row(
+                    mainAxisSize: MainAxisSize.min,
                     children: _template!.actions.map((action) {
                       final fieldValue = record[action.field]?.toString() ?? '';
                       return Padding(
@@ -590,16 +647,19 @@ class _NoteViewScreenState extends State<NoteViewScreen>
     final fields = _template?.fields ?? [];
     final List<Widget> rows = [];
 
-    for (final entry in record.entries) {
-      // Find field definition
-      final fieldDef = fields.firstWhere(
-        (f) => f.id == entry.key,
-        orElse: () => Field(
-          id: entry.key,
-          type: FieldType.text,
-          label: entry.key,
-        ),
-      );
+    for (final fieldDef in fields) {
+      // For customLabel, get user label and value from flat keys
+      String displayLabel = fieldDef.label;
+      dynamic displayValue;
+      if (fieldDef.type == FieldType.customLabel) {
+        final userLabel = record['${fieldDef.id}_label']?.toString();
+        if (userLabel != null && userLabel.isNotEmpty) {
+          displayLabel = userLabel;
+        }
+        displayValue = record['${fieldDef.id}_value'];
+      } else {
+        displayValue = record[fieldDef.id];
+      }
 
       rows.add(
         Container(
@@ -636,7 +696,7 @@ class _NoteViewScreenState extends State<NoteViewScreen>
                   crossAxisAlignment: CrossAxisAlignment.start,
                   children: [
                     Text(
-                      fieldDef.label,
+                      displayLabel,
                       style: theme.textTheme.bodySmall?.copyWith(
                         color: theme.colorScheme.onSurfaceVariant,
                         fontWeight: FontWeight.w600,
@@ -644,7 +704,7 @@ class _NoteViewScreenState extends State<NoteViewScreen>
                       ),
                     ),
                     const SizedBox(height: 4),
-                    _buildFieldValue(theme, fieldDef, entry.value),
+                    _buildFieldValue(theme, fieldDef, displayValue),
                   ],
                 ),
               ),
@@ -656,15 +716,15 @@ class _NoteViewScreenState extends State<NoteViewScreen>
                   color: theme.colorScheme.onSurfaceVariant.withValues(alpha: 0.7),
                 ),
                 onPressed: () => _copyToClipboard(
-                  entry.value?.toString() ?? '',
-                  fieldDef.label,
+                  displayValue?.toString() ?? '',
+                  displayLabel,
                 ),
                 padding: EdgeInsets.zero,
                 constraints: const BoxConstraints(
                   minWidth: 32,
                   minHeight: 32,
                 ),
-                tooltip: 'Copy ${fieldDef.label}',
+                tooltip: 'Copy $displayLabel',
               ),
             ],
           ),
@@ -695,6 +755,10 @@ class _NoteViewScreenState extends State<NoteViewScreen>
         return Icons.dns;
       case FieldType.password:
         return Icons.lock;
+      case FieldType.regex:
+        return Icons.rule;
+      case FieldType.customLabel:
+        return Icons.label_outline;
     }
   }
 
@@ -761,6 +825,14 @@ class _NoteViewScreenState extends State<NoteViewScreen>
               ),
             ),
           ],
+        );
+
+      case FieldType.customLabel:
+        return Text(
+          value?.toString() ?? '',
+          style: theme.textTheme.bodyMedium?.copyWith(
+            fontWeight: FontWeight.w500,
+          ),
         );
 
       default:

@@ -10,10 +10,12 @@ class NoteCard extends StatefulWidget {
     super.key,
     required this.note,
     required this.onTap,
+    this.templateName,
   });
 
   final Note note;
   final VoidCallback onTap;
+  final String? templateName;
 
   @override
   State<NoteCard> createState() => _NoteCardState();
@@ -94,6 +96,7 @@ class _NoteCardState extends State<NoteCard>
     final theme = Theme.of(context);
     final categoryColor = _getCategoryColor(widget.note.category);
     final categoryIcon = _getCategoryIcon(widget.note.category);
+    final hasEmoji = widget.note.icon != null && widget.note.icon!.isNotEmpty;
 
     return GestureDetector(
       onTapDown: _handleTapDown,
@@ -119,7 +122,7 @@ class _NoteCardState extends State<NoteCard>
           ),
           child: Row(
             children: [
-              // Icon
+              // Icon — emoji or category icon
               Container(
                 width: 48,
                 height: 48,
@@ -127,11 +130,18 @@ class _NoteCardState extends State<NoteCard>
                   color: categoryColor.withValues(alpha: 0.1),
                   borderRadius: BorderRadius.circular(12),
                 ),
-                child: Icon(
-                  categoryIcon,
-                  color: categoryColor,
-                  size: 24,
-                ),
+                child: hasEmoji
+                    ? Center(
+                        child: Text(
+                          widget.note.icon!,
+                          style: const TextStyle(fontSize: 24),
+                        ),
+                      )
+                    : Icon(
+                        categoryIcon,
+                        color: categoryColor,
+                        size: 24,
+                      ),
               ),
               const SizedBox(width: 12),
               // Content
@@ -183,18 +193,28 @@ class _NoteCardState extends State<NoteCard>
                             ),
                           ),
                         ),
-                        const SizedBox(width: 8),
-                        // Description
-                        Expanded(
-                          child: Text(
-                            _getDescription(),
-                            style: theme.textTheme.bodySmall?.copyWith(
-                              color: theme.colorScheme.onSurfaceVariant,
+                        // Template type badge
+                        if (widget.templateName != null) ...[
+                          const SizedBox(width: 6),
+                          Container(
+                            padding: const EdgeInsets.symmetric(
+                              horizontal: 6,
+                              vertical: 2,
                             ),
-                            maxLines: 1,
-                            overflow: TextOverflow.ellipsis,
+                            decoration: BoxDecoration(
+                              color: AppTheme.primaryColor.withValues(alpha: 0.1),
+                              borderRadius: BorderRadius.circular(4),
+                            ),
+                            child: Text(
+                              widget.templateName!,
+                              style: TextStyle(
+                                color: AppTheme.primaryColor,
+                                fontSize: 10,
+                                fontWeight: FontWeight.w600,
+                              ),
+                            ),
                           ),
-                        ),
+                        ],
                       ],
                     ),
                   ],
@@ -221,19 +241,5 @@ class _NoteCardState extends State<NoteCard>
       return AppDateUtils.getRelativeTime(widget.note.createdAt!);
     }
     return '';
-  }
-
-  String _getDescription() {
-    if (widget.note.records.isEmpty) return 'No records';
-
-    // Try to get a meaningful description from first record
-    final first = widget.note.records.first;
-    for (final key in ['username', 'email', 'description', 'notes']) {
-      if (first.containsKey(key) && first[key] != null) {
-        return first[key].toString();
-      }
-    }
-
-    return '${widget.note.records.length} record${widget.note.records.length != 1 ? 's' : ''}';
   }
 }

@@ -91,16 +91,27 @@ class NoteRepository {
   Note createNew({
     required String templateId,
     required String category,
+    String? title,
+    String? icon,
     int templateVersion = 1,
     List<String> tags = const [],
   }) {
-    final filename = Sanitizers.generateFilename(templateId);
+    final String filename;
+    if (title != null && title.isNotEmpty) {
+      final base = Sanitizers.labelToId(title);
+      final timestamp = DateTime.now().millisecondsSinceEpoch;
+      filename = '${base}_$timestamp.md';
+    } else {
+      filename = Sanitizers.generateFilename(templateId);
+    }
     return Note(
       id: filename.replaceAll('.md', ''),
       templateId: templateId,
       templateVersion: templateVersion,
       category: category,
       filename: filename,
+      title: title,
+      icon: icon,
       tags: tags,
       records: [{}], // Start with one empty record
       createdAt: DateTime.now(),
@@ -148,6 +159,11 @@ class NoteRepository {
     return _storage.getCategories();
   }
 
+  /// Adds a new category.
+  Future<void> addCategory(String name) async {
+    await _storage.addCategory(name);
+  }
+
   /// Gets recent notes.
   List<Note> getRecent({int limit = 10}) {
     final all = getAll();
@@ -163,6 +179,29 @@ class NoteRepository {
   /// Clears the cache.
   void clearCache() {
     _cache.clear();
+  }
+
+  /// Renames a category – moves all notes from old to new.
+  Future<void> renameCategory(String oldName, String newName) async {
+    final notes = getByCategory(oldName);
+    for (final note in notes) {
+      final updatedNote = note.copyWith(category: newName);
+      // Save under new category
+      await _storage.saveNote(
+          updatedNote.category, updatedNote.filename, updatedNote.toMarkdown());
+      _cache['${updatedNote.category}/${updatedNote.filename}'] = updatedNote;
+      // Delete old
+      await _storage.deleteNote(oldName, note.filename);
+      _cache.remove('$oldName/${note.filename}');
+    }
+  }
+
+  /// Deletes a category and all its notes.
+  Future<void> deleteCategory(String name) async {
+    final notes = getByCategory(name);
+    for (final note in notes) {
+      await delete(name, note.filename);
+    }
   }
 
   Note? _parseNote(String category, String filename, String content) {
@@ -187,6 +226,7 @@ class NoteRepository {
     final searchText = <String>[];
 
     searchText.add(note.filename);
+    if (note.title != null) searchText.add(note.title!);
     searchText.addAll(note.tags);
     for (final record in note.records) {
       for (final value in record.values) {

@@ -3,6 +3,8 @@ import 'package:flutter/material.dart';
 import 'core/app_state.dart';
 import 'core/router.dart';
 import 'core/theme/app_theme.dart';
+import 'data/services/fs_interop.dart';
+import 'presentation/screens/setup/setup_screen.dart';
 
 void main() {
   WidgetsFlutterBinding.ensureInitialized();
@@ -49,6 +51,27 @@ class _OrganoteAppState extends State<OrganoteApp> {
             darkTheme: AppTheme.darkTheme,
             themeMode: ThemeMode.system,
             home: const _SplashScreen(),
+          );
+        }
+
+        // Show setup screen if storage not yet configured
+        if (!AppState.instance.storageConfigured) {
+          return MaterialApp(
+            title: 'Organote',
+            debugShowCheckedModeBanner: false,
+            theme: AppTheme.lightTheme,
+            darkTheme: AppTheme.darkTheme,
+            themeMode: AppState.instance.themeMode,
+            home: SetupScreen(
+              onComplete: () async {
+                // Determine which storage was configured
+                final storageType = FileSystemInterop.currentStorageType;
+                await AppState.instance.completeStorageSetup(
+                  storageType == 'none' ? 'local' : storageType,
+                );
+                if (mounted) setState(() {});
+              },
+            ),
           );
         }
 

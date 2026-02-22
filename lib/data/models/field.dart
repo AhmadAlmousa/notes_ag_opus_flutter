@@ -9,6 +9,8 @@ enum FieldType {
   url,
   ip,
   password,
+  regex,
+  customLabel,
 }
 
 /// Extension to get field type from string.
@@ -33,6 +35,10 @@ extension FieldTypeExtension on FieldType {
         return 'IP Address';
       case FieldType.password:
         return 'Password';
+      case FieldType.regex:
+        return 'Regex';
+      case FieldType.customLabel:
+        return 'Custom Label';
     }
   }
 
@@ -56,12 +62,21 @@ extension FieldTypeExtension on FieldType {
         return 'dns';
       case FieldType.password:
         return 'lock';
+      case FieldType.regex:
+        return 'rule';
+      case FieldType.customLabel:
+        return 'label';
     }
   }
 
   static FieldType fromString(String value) {
+    final lower = value.toLowerCase();
+    // Handle camelCase → enum mapping
+    if (lower == 'customlabel' || lower == 'custom_label') {
+      return FieldType.customLabel;
+    }
     return FieldType.values.firstWhere(
-      (type) => type.name == value.toLowerCase(),
+      (type) => type.name == lower,
       orElse: () => FieldType.text,
     );
   }
@@ -105,7 +120,7 @@ class Field {
   Map<String, dynamic> toYaml() {
     final map = <String, dynamic>{
       'id': id,
-      'type': type.name,
+      'type': type == FieldType.customLabel ? 'custom_label' : type.name,
       'label': label,
     };
     if (required) {
@@ -142,6 +157,8 @@ class FieldOptions {
     this.length,
     this.dropdownOptions,
     this.calendarMode,
+    this.regexPattern,
+    this.regexHint,
   });
 
   /// Minimum value for number fields.
@@ -158,6 +175,12 @@ class FieldOptions {
 
   /// Calendar mode for date fields.
   final CalendarMode? calendarMode;
+
+  /// Regex pattern for regex fields.
+  final String? regexPattern;
+
+  /// User-facing description of valid format for regex fields.
+  final String? regexHint;
 
   factory FieldOptions.fromYaml(Map<String, dynamic> yaml) {
     List<String>? dropdownOpts;
@@ -180,6 +203,8 @@ class FieldOptions {
       length: yaml['length'] as int?,
       dropdownOptions: dropdownOpts,
       calendarMode: calMode,
+      regexPattern: yaml['regex_pattern'] as String?,
+      regexHint: yaml['regex_hint'] as String?,
     );
   }
 
@@ -190,6 +215,8 @@ class FieldOptions {
     if (length != null) map['length'] = length;
     if (dropdownOptions != null) map['options'] = dropdownOptions;
     if (calendarMode != null) map['calendar'] = calendarMode!.name;
+    if (regexPattern != null) map['regex_pattern'] = regexPattern;
+    if (regexHint != null) map['regex_hint'] = regexHint;
     return map;
   }
 }

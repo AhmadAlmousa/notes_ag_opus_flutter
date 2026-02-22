@@ -109,6 +109,30 @@ class _SettingsScreenState extends State<SettingsScreen>
 
                     const SizedBox(height: 16),
 
+                    // Storage section
+                    _buildSection(
+                      context,
+                      'Storage',
+                      Icons.folder_outlined,
+                      [
+                        _buildInfoTile(
+                          context,
+                          'Storage Type',
+                          _getStorageLabel(appState.storageType),
+                          Icons.dns_outlined,
+                        ),
+                        if (appState.storageDirectoryName != null)
+                          _buildInfoTile(
+                            context,
+                            'Directory',
+                            appState.storageDirectoryName!,
+                            Icons.folder_open,
+                          ),
+                      ],
+                    ),
+
+                    const SizedBox(height: 16),
+
                     // Import/Export section
                     _buildSection(
                       context,
@@ -414,5 +438,18 @@ class _SettingsScreenState extends State<SettingsScreen>
         ],
       ),
     );
+  }
+
+  String _getStorageLabel(String type) {
+    switch (type) {
+      case 'fsa':
+        return 'Local Directory';
+      case 'opfs':
+        return 'App Storage (OPFS)';
+      case 'local':
+        return 'Browser Storage';
+      default:
+        return 'Browser Storage';
+    }
   }
 }

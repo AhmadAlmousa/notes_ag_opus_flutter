@@ -1,13 +1,16 @@
 {
-    "name": "organote",
-    "short_name": "organote",
+    "name": "Organote",
+    "short_name": "Organote",
+    "description": "Structured Markdown Notes - Organize, template, and manage your notes with ease",
     "start_url": ".",
+    "scope": ".",
+    "id": "organote-pwa",
     "display": "standalone",
-    "background_color": "#0175C2",
-    "theme_color": "#0175C2",
-    "description": "A new Flutter project.",
-    "orientation": "portrait-primary",
+    "background_color": "#1A1A2E",
+    "theme_color": "#6C5CE7",
+    "orientation": "any",
     "prefer_related_applications": false,
+    "categories": ["productivity", "utilities"],
     "icons": [
         {
             "src": "icons/Icon-192.png",
