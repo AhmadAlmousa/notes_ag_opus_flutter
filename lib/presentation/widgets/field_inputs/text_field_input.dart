@@ -2,7 +2,7 @@ import 'package:flutter/material.dart';
 
 import '../../../data/models/field.dart';
 
-/// Text field input widget with error state support.
+/// Text field input widget with real-time validation support.
 class TextFieldInput extends StatefulWidget {
   const TextFieldInput({
     super.key,
@@ -51,18 +51,50 @@ class _TextFieldInputState extends State<TextFieldInput> {
     super.dispose();
   }
 
+  String? _validate(String? value) {
+    final v = value ?? '';
+    // Required field check
+    if (widget.field.required && v.trim().isEmpty) {
+      return '${widget.field.label} is required';
+    }
+    // Number range validation
+    if (widget.keyboardType == TextInputType.number && v.isNotEmpty) {
+      final num? parsed = num.tryParse(v);
+      if (parsed == null) {
+        return 'Enter a valid number';
+      }
+      if (widget.field.options?.min != null && parsed < widget.field.options!.min!) {
+        return 'Minimum value is ${widget.field.options!.min}';
+      }
+      if (widget.field.options?.max != null && parsed > widget.field.options!.max!) {
+        return 'Maximum value is ${widget.field.options!.max}';
+      }
+    }
+    // Digits length validation
+    if (widget.maxLength != null && v.isNotEmpty && v.length != widget.maxLength) {
+      return 'Must be exactly ${widget.maxLength} digits';
+    }
+    // URL validation
+    if (widget.keyboardType == TextInputType.url && v.isNotEmpty) {
+      final uri = Uri.tryParse(v);
+      if (uri == null || !uri.hasScheme) {
+        return 'Enter a valid URL (e.g. https://...)';
+      }
+    }
+    return null;
+  }
+
   @override
   Widget build(BuildContext context) {
-    return TextField(
+    return TextFormField(
       controller: _controller,
       onChanged: widget.onChanged,
       keyboardType: widget.keyboardType,
       maxLength: widget.maxLength,
+      validator: _validate,
+      autovalidateMode: AutovalidateMode.onUserInteraction,
       decoration: InputDecoration(
         labelText: widget.field.label,
-        labelStyle: widget.hasError 
-            ? TextStyle(color: Colors.red.shade700)
-            : null,
         hintText: 'Enter ${widget.field.label.toLowerCase()}',
         prefixIcon: widget.prefixIcon != null
             ? Icon(widget.prefixIcon)
@@ -75,19 +107,6 @@ class _TextFieldInputState extends State<TextFieldInput> {
               )
             : null,
         counterText: '',
-        errorText: widget.hasError ? 'This field is required' : null,
-        enabledBorder: widget.hasError
-            ? OutlineInputBorder(
-                borderRadius: BorderRadius.circular(8),
-                borderSide: const BorderSide(color: Colors.red, width: 1.5),
-              )
-            : null,
-        focusedBorder: widget.hasError
-            ? OutlineInputBorder(
-                borderRadius: BorderRadius.circular(8),
-                borderSide: const BorderSide(color: Colors.red, width: 2),
-              )
-            : null,
       ),
     );
   }

@@ -23,7 +23,6 @@ class RegexFieldInput extends StatefulWidget {
 
 class _RegexFieldInputState extends State<RegexFieldInput> {
   late TextEditingController _controller;
-  String? _errorText;
 
   @override
   void initState() {
@@ -45,27 +44,23 @@ class _RegexFieldInputState extends State<RegexFieldInput> {
     super.dispose();
   }
 
-  void _validate(String value) {
+  String? _validate(String? value) {
+    final v = value ?? '';
+    if (widget.field.required && v.trim().isEmpty) {
+      return '${widget.field.label} is required';
+    }
     final pattern = widget.field.options?.regexPattern;
-    if (pattern == null || pattern.isEmpty || value.isEmpty) {
-      setState(() => _errorText = null);
-      widget.onChanged(value);
-      return;
-    }
-
-    try {
-      final regex = RegExp(pattern);
-      if (regex.hasMatch(value)) {
-        setState(() => _errorText = null);
-      } else {
-        setState(() {
-          _errorText = widget.field.options?.regexHint ?? 'Invalid format';
-        });
+    if (pattern != null && pattern.isNotEmpty && v.isNotEmpty) {
+      try {
+        final regex = RegExp(pattern);
+        if (!regex.hasMatch(v)) {
+          return widget.field.options?.regexHint ?? 'Invalid format';
+        }
+      } catch (_) {
+        // Invalid regex pattern in template — don't block user
       }
-    } catch (_) {
-      setState(() => _errorText = null);
     }
-    widget.onChanged(value);
+    return null;
   }
 
   @override
@@ -73,15 +68,16 @@ class _RegexFieldInputState extends State<RegexFieldInput> {
     final theme = Theme.of(context);
     final hint = widget.field.options?.regexHint;
 
-    return TextField(
+    return TextFormField(
       controller: _controller,
-      onChanged: _validate,
+      onChanged: (v) => widget.onChanged(v),
+      validator: _validate,
+      autovalidateMode: AutovalidateMode.onUserInteraction,
       decoration: InputDecoration(
         labelText: widget.field.label,
         hintText: hint ?? 'Enter value',
         helperText: hint,
         helperMaxLines: 2,
-        errorText: _errorText,
         errorMaxLines: 2,
         prefixIcon: const Icon(Icons.rule, size: 20),
         suffixIcon: widget.field.required
@@ -100,9 +96,7 @@ class _RegexFieldInputState extends State<RegexFieldInput> {
         border: OutlineInputBorder(
           borderRadius: BorderRadius.circular(12),
           borderSide: BorderSide(
-            color: widget.hasError || _errorText != null
-                ? Colors.red
-                : theme.colorScheme.outline.withValues(alpha: 0.2),
+            color: theme.colorScheme.outline.withValues(alpha: 0.2),
           ),
         ),
       ),

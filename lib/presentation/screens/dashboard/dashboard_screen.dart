@@ -1,7 +1,8 @@
 import 'package:flutter/material.dart';
+import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:go_router/go_router.dart';
 
-import '../../../core/app_state.dart';
+import '../../../core/providers.dart';
 import '../../../core/compliance_checker.dart';
 import '../../../core/theme/app_theme.dart';
 import '../../../data/models/note.dart';
@@ -11,14 +12,14 @@ import '../../widgets/common/search_bar.dart' as app;
 import '../../widgets/layout/app_scaffold.dart';
 
 /// Dashboard home screen.
-class DashboardScreen extends StatefulWidget {
+class DashboardScreen extends ConsumerStatefulWidget {
   const DashboardScreen({super.key});
 
   @override
-  State<DashboardScreen> createState() => _DashboardScreenState();
+  ConsumerState<DashboardScreen> createState() => _DashboardScreenState();
 }
 
-class _DashboardScreenState extends State<DashboardScreen>
+class _DashboardScreenState extends ConsumerState<DashboardScreen>
     with SingleTickerProviderStateMixin {
   late AnimationController _animationController;
   late List<Animation<double>> _itemAnimations;
@@ -47,9 +48,9 @@ class _DashboardScreenState extends State<DashboardScreen>
   }
 
   Future<void> _loadData() async {
-    final appState = AppState.instance;
-    final templates = appState.templateRepository.getAll();
-    final allNotes = appState.noteRepository.getAll();
+    final appState = ref;
+    final templates = appState.read(templateRepoProvider).getAll();
+    final allNotes = appState.read(noteRepoProvider).getAll();
     
     // Build template map for compliance checking
     final templateMap = <String, Template>{};
@@ -60,10 +61,11 @@ class _DashboardScreenState extends State<DashboardScreen>
     // Check compliance
     final compliance = ComplianceChecker.checkAll(allNotes, templateMap);
 
+    if (!mounted) return;
     setState(() {
       _templates = templates;
-      _recentNotes = appState.noteRepository.getRecent(limit: 10);
-      _categories = ['all', ...appState.noteRepository.getCategories()];
+      _recentNotes = ref.read(noteRepoProvider).getRecent(limit: 10);
+      _categories = ['all', ...ref.read(noteRepoProvider).getCategories()];
       _compliance = compliance;
       _isLoading = false;
     });
@@ -100,9 +102,9 @@ class _DashboardScreenState extends State<DashboardScreen>
     setState(() {
       _selectedCategory = category;
       if (category == 'all') {
-        _recentNotes = AppState.instance.noteRepository.getRecent(limit: 10);
+        _recentNotes = ref.read(noteRepoProvider).getRecent(limit: 10);
       } else {
-        _recentNotes = AppState.instance.noteRepository.getByCategory(category);
+        _recentNotes = ref.read(noteRepoProvider).getByCategory(category);
       }
     });
   }
@@ -113,12 +115,15 @@ class _DashboardScreenState extends State<DashboardScreen>
       return;
     }
     setState(() {
-      _recentNotes = AppState.instance.noteRepository.search(query);
+      _recentNotes = ref.read(noteRepoProvider).search(query);
     });
   }
 
   @override
   Widget build(BuildContext context) {
+    // Reload data when remote sync changes arrive
+    ref.listen(syncTriggerProvider, (_, __) => _loadData());
+
     final theme = Theme.of(context);
     final colorScheme = theme.colorScheme;
 
@@ -214,9 +219,10 @@ class _DashboardScreenState extends State<DashboardScreen>
                               Padding(
                                 padding: const EdgeInsets.only(bottom: 12),
                                 child: NoteCard(
+                                  key: ValueKey(_recentNotes[index].id),
                                   note: _recentNotes[index],
                                   onTap: () => _openNote(_recentNotes[index]),
-                                  templateName: AppState.instance.templateRepository
+                                  templateName: ref.read(templateRepoProvider)
                                       .getById(_recentNotes[index].templateId)
                                       ?.name,
                                 ),
@@ -235,17 +241,15 @@ class _DashboardScreenState extends State<DashboardScreen>
 
   Widget _buildAnimatedItem(int index, Widget child) {
     final animation = _getAnimation(index);
-    return AnimatedBuilder(
-      animation: animation,
-      builder: (context, _) {
-        return Opacity(
-          opacity: animation.value,
-          child: Transform.translate(
-            offset: Offset(0, 20 * (1 - animation.value)),
-            child: child,
-          ),
-        );
-      },
+    return FadeTransition(
+      opacity: animation,
+      child: AnimatedBuilder(
+        animation: animation,
+        builder: (context, _) => Transform.translate(
+          offset: Offset(0, 20 * (1 - animation.value)),
+          child: child,
+        ),
+      ),
     );
   }
 
@@ -521,7 +525,7 @@ class _DashboardScreenState extends State<DashboardScreen>
   }
 
   void _showEditCategoriesDialog(BuildContext context) {
-    final noteRepo = AppState.instance.noteRepository;
+    final noteRepo = ref.read(noteRepoProvider);
     // Get only real categories (not 'all')
     final cats = noteRepo.getCategories();
 

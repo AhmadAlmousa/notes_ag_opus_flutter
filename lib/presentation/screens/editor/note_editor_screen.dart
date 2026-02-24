@@ -1,7 +1,10 @@
+import 'dart:async';
+
 import 'package:flutter/material.dart';
+import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:go_router/go_router.dart';
 
-import '../../../core/app_state.dart';
+import '../../../core/providers.dart';
 import '../../../core/theme/app_theme.dart';
 import '../../../core/utils/sanitizers.dart';
 import '../../../data/models/field.dart';
@@ -10,8 +13,11 @@ import '../../../data/models/template.dart';
 import '../../widgets/common/emoji_picker_dialog.dart';
 import '../../widgets/field_inputs/field_input_widget.dart';
 
-/// Note editor screen with form-based entry.
-class NoteEditorScreen extends StatefulWidget {
+/// Auto-save state indicator.
+enum _SaveState { unsaved, saving, saved }
+
+/// Note editor screen with form-based entry and debounced auto-save.
+class NoteEditorScreen extends ConsumerStatefulWidget {
   const NoteEditorScreen({
     super.key,
     this.templateId,
@@ -24,15 +30,18 @@ class NoteEditorScreen extends StatefulWidget {
   final String? filename;
 
   @override
-  State<NoteEditorScreen> createState() => _NoteEditorScreenState();
+  ConsumerState<NoteEditorScreen> createState() => _NoteEditorScreenState();
 }
 
-class _NoteEditorScreenState extends State<NoteEditorScreen> {
+class _NoteEditorScreenState extends ConsumerState<NoteEditorScreen> {
+  final _formKey = GlobalKey<FormState>();
   Note? _note;
   Template? _template;
   bool _isLoading = true;
   bool _isNew = true;
   bool _hasChanges = false;
+  _SaveState _saveState = _SaveState.unsaved;
+  Timer? _autoSaveTimer;
   late List<Map<String, dynamic>> _records;
   late String _category;
   late List<String> _tags;
@@ -40,7 +49,6 @@ class _NoteEditorScreenState extends State<NoteEditorScreen> {
   String? _icon;
   String? _originalCategory;
   String? _originalFilename;
-  Set<String> _validationErrors = {};
 
   @override
   void initState() {
@@ -51,21 +59,25 @@ class _NoteEditorScreenState extends State<NoteEditorScreen> {
 
   @override
   void dispose() {
+    _autoSaveTimer?.cancel();
+    // Trigger a final save if there are unsaved changes
+    if (_hasChanges && _note != null && _template != null) {
+      _performSave(navigate: false);
+    }
     _titleController.dispose();
     super.dispose();
   }
 
   Future<void> _loadData() async {
-    final appState = AppState.instance;
 
     if (widget.filename != null && widget.category != null) {
       // Editing existing note
-      _note = appState.noteRepository.getNote(
+      _note = ref.read(noteRepoProvider).getNote(
         widget.category!,
         widget.filename!,
       );
       if (_note != null) {
-        _template = appState.templateRepository.getById(_note!.templateId);
+        _template = ref.read(templateRepoProvider).getById(_note!.templateId);
         _records = List.from(_note!.records.map((r) => Map<String, dynamic>.from(r)));
         _category = _note!.category;
         _tags = List.from(_note!.tags);
@@ -79,9 +91,9 @@ class _NoteEditorScreenState extends State<NoteEditorScreen> {
       }
     } else if (widget.templateId != null) {
       // Creating new note
-      _template = appState.templateRepository.getById(widget.templateId!);
+      _template = ref.read(templateRepoProvider).getById(widget.templateId!);
       if (_template != null) {
-        _note = appState.noteRepository.createNew(
+        _note = ref.read(noteRepoProvider).createNew(
           templateId: widget.templateId!,
           category: widget.category ?? _template!.defaultFolder ?? 'personal',
           templateVersion: _template!.version,
@@ -102,8 +114,21 @@ class _NoteEditorScreenState extends State<NoteEditorScreen> {
     if (!_hasChanges) {
       setState(() {
         _hasChanges = true;
+        _saveState = _SaveState.unsaved;
       });
     }
+    // Restart the 2-second auto-save debounce timer
+    _autoSaveTimer?.cancel();
+    _autoSaveTimer = Timer(const Duration(seconds: 2), _autoSave);
+  }
+
+  /// Silently auto-saves without navigation or snackbar.
+  Future<void> _autoSave() async {
+    if (!mounted || _template == null || _note == null) return;
+    if (_titleController.text.trim().isEmpty) return; // Don't auto-save without title
+    setState(() => _saveState = _SaveState.saving);
+    await _performSave(navigate: false);
+    if (mounted) setState(() => _saveState = _SaveState.saved);
   }
 
   void _updateFieldValue(int recordIndex, String fieldId, dynamic value) {
@@ -127,60 +152,51 @@ class _NoteEditorScreenState extends State<NoteEditorScreen> {
     }
   }
 
+  /// Generates a collision-safe filename from the note title.
+  /// If a note with the same filename already exists in the category
+  /// (and it's not the same note being edited), appends a timestamp.
+  String _generateSafeFilename(String title) {
+    final base = Sanitizers.toFilename(title);
+    final candidate = '$base.md';
+
+    // For existing notes keeping the same title, preserve the filename
+    if (!_isNew && _originalFilename == candidate) return candidate;
+
+    // Check if filename already exists in this category
+    final repo = ref.read(noteRepoProvider);
+    final existing = repo.getNote(_category, candidate);
+    if (existing == null) return candidate;
+
+    // Collision detected: append timestamp
+    final ts = DateTime.now().millisecondsSinceEpoch;
+    return '${base}_$ts.md';
+  }
+
+  /// Explicit save — validates, saves, and navigates to the note view.
   Future<void> _save() async {
     if (_template == null || _note == null) return;
 
-    // Validate title  
-    final errors = <String>{};
-    if (_titleController.text.trim().isEmpty) {
-      errors.add('title');
-    }
-
-    // Validate required fields and collect errors
-    for (int i = 0; i < _records.length; i++) {
-      final record = _records[i];
-      for (final field in _template!.fields) {
-        if (field.required &&
-            (record[field.id] == null ||
-                record[field.id].toString().isEmpty)) {
-          errors.add('$i:${field.id}');
-        }
-      }
-    }
-
-    // If there are errors, show them and update state
-    if (errors.isNotEmpty) {
-      setState(() {
-        _validationErrors = errors;
-      });
-      
-      if (errors.contains('title')) {
-        ScaffoldMessenger.of(context).showSnackBar(
-          const SnackBar(content: Text('Note title is required')),
-        );
-      } else {
-        final missingFields = errors
-            .where((e) => e.contains(':'))
-            .map((e) {
-              final parts = e.split(':');
-              final field = _template!.fields.firstWhere(
-                (f) => f.id == parts[1],
-                orElse: () => _template!.fields.first,
-              );
-              return field.label;
-            })
-            .toSet()
-            .join(', ');
-        ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(content: Text('Missing required fields: $missingFields')),
-        );
-      }
+    // Trigger form validation
+    if (!(_formKey.currentState?.validate() ?? false)) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(content: Text('Please fix the errors before saving')),
+      );
       return;
     }
 
-    // Generate filename from title using underscores (no spaces)
+    _autoSaveTimer?.cancel();
+    setState(() => _saveState = _SaveState.saving);
+
+    await _performSave(navigate: true);
+  }
+
+  /// Core save logic — reused by both auto-save and explicit save.
+  Future<void> _performSave({required bool navigate}) async {
+    if (_template == null || _note == null) return;
     final title = _titleController.text.trim();
-    final filename = '${Sanitizers.toFilename(title)}.md';
+    if (title.isEmpty) return;
+
+    final filename = _generateSafeFilename(title);
 
     final updatedNote = _note!.copyWith(
       title: title,
@@ -192,7 +208,7 @@ class _NoteEditorScreenState extends State<NoteEditorScreen> {
       updatedAt: DateTime.now(),
     );
 
-    final repo = AppState.instance.noteRepository;
+    final repo = ref.read(noteRepoProvider);
     await repo.save(updatedNote);
 
     // Delete old file if category or filename changed (prevents duplicates)
@@ -201,13 +217,29 @@ class _NoteEditorScreenState extends State<NoteEditorScreen> {
       final filenameChanged = _originalFilename != filename;
       if (categoryChanged || filenameChanged) {
         await repo.delete(_originalCategory!, _originalFilename!);
+        // Push deletion of old path to cloud
+        final syncService = ref.read(syncServiceProvider);
+        syncService.pushDeletion('notes/$_originalCategory/$_originalFilename');
       }
     }
 
-    if (mounted) {
+    // Push to cloud
+    final syncService = ref.read(syncServiceProvider);
+    syncService.pushDocument(
+      'notes/${updatedNote.category}/${updatedNote.filename}',
+      updatedNote.toMarkdown(),
+    );
+
+    // Update tracking for subsequent saves
+    _originalCategory = _category;
+    _originalFilename = filename;
+    _hasChanges = false;
+    if (_isNew) _isNew = false;
+
+    if (navigate && mounted) {
       ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(
-          content: Text(_isNew ? 'Note created!' : 'Note saved!'),
+        const SnackBar(
+          content: Text('Note saved!'),
           backgroundColor: Colors.green,
         ),
       );
@@ -217,6 +249,12 @@ class _NoteEditorScreenState extends State<NoteEditorScreen> {
 
   Future<bool> _onWillPop() async {
     if (!_hasChanges) return true;
+
+    // Auto-save before leaving instead of discarding
+    if (_titleController.text.trim().isNotEmpty) {
+      await _performSave(navigate: false);
+      return true;
+    }
 
     final result = await showDialog<bool>(
       context: context,
@@ -268,19 +306,35 @@ class _NoteEditorScreenState extends State<NoteEditorScreen> {
       },
       child: Scaffold(
         appBar: AppBar(
-          title: Text(_isNew ? 'New Note' : 'Edit Note'),
-          actions: [
-            TextButton.icon(
-              onPressed: _save,
-              icon: const Icon(Icons.check),
-              label: const Text('Save'),
-              style: TextButton.styleFrom(
-                foregroundColor: AppTheme.primaryColor,
-              ),
-            ),
-          ],
+          title: Row(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              Text(_isNew ? 'New Note' : 'Edit Note'),
+              if (_saveState == _SaveState.saving) ...[
+                const SizedBox(width: 12),
+                const SizedBox(
+                  width: 14, height: 14,
+                  child: CircularProgressIndicator(strokeWidth: 2),
+                ),
+                const SizedBox(width: 6),
+                Text('Saving...', style: TextStyle(
+                  fontSize: 12, color: Theme.of(context).colorScheme.onSurfaceVariant,
+                )),
+              ] else if (_saveState == _SaveState.saved) ...[
+                const SizedBox(width: 12),
+                const Icon(Icons.check_circle, size: 16, color: Colors.green),
+                const SizedBox(width: 4),
+                Text('Saved', style: TextStyle(
+                  fontSize: 12, color: Colors.green.shade600,
+                )),
+              ],
+            ],
+          ),
         ),
-        body: SingleChildScrollView(
+        body: Form(
+          key: _formKey,
+          autovalidateMode: AutovalidateMode.onUserInteraction,
+          child: SingleChildScrollView(
           physics: const BouncingScrollPhysics(),
           padding: const EdgeInsets.all(20),
           child: Column(
@@ -353,6 +407,7 @@ class _NoteEditorScreenState extends State<NoteEditorScreen> {
             ],
           ),
         ),
+        ),
       ),
     );
   }
@@ -408,9 +463,12 @@ class _NoteEditorScreenState extends State<NoteEditorScreen> {
             const SizedBox(width: 12),
             // Title text field
             Expanded(
-              child: TextField(
+              child: TextFormField(
                 controller: _titleController,
                 onChanged: (_) => _markChanged(),
+                validator: (v) => (v == null || v.trim().isEmpty)
+                    ? 'Note title is required'
+                    : null,
                 decoration: InputDecoration(
                   hintText: 'Enter a title for this note',
                   filled: true,
@@ -434,7 +492,7 @@ class _NoteEditorScreenState extends State<NoteEditorScreen> {
   }
 
   Widget _buildCategorySelector(ThemeData theme) {
-    final categories = AppState.instance.noteRepository.getCategories();
+    final categories = ref.read(noteRepoProvider).getCategories();
 
     return Column(
       crossAxisAlignment: CrossAxisAlignment.start,
@@ -478,13 +536,13 @@ class _NoteEditorScreenState extends State<NoteEditorScreen> {
   List<Widget> _buildRecords(ThemeData theme) {
     return List.generate(_records.length, (index) {
       return Padding(
+        key: ValueKey('record_$index'),
         padding: const EdgeInsets.only(bottom: 16),
         child: _RecordForm(
           index: index,
           record: _records[index],
           fields: _template!.fields,
           canRemove: _records.length > 1,
-          validationErrors: _validationErrors,
           onFieldChanged: (fieldId, value) =>
               _updateFieldValue(index, fieldId, value),
           onRemove: () => _removeRecord(index),
@@ -500,7 +558,6 @@ class _RecordForm extends StatelessWidget {
     required this.record,
     required this.fields,
     required this.canRemove,
-    required this.validationErrors,
     required this.onFieldChanged,
     required this.onRemove,
   });
@@ -509,7 +566,6 @@ class _RecordForm extends StatelessWidget {
   final Map<String, dynamic> record;
   final List<Field> fields;
   final bool canRemove;
-  final Set<String> validationErrors;
   final Function(String, dynamic) onFieldChanged;
   final VoidCallback onRemove;
 
@@ -587,12 +643,10 @@ class _RecordForm extends StatelessWidget {
               ],
             ),
           ),
-          // Fields
           Padding(
             padding: const EdgeInsets.all(16),
             child: Column(
               children: fields.map((field) {
-                final hasError = validationErrors.contains('$index:${field.id}');
                 // For customLabel fields, assemble a Map from flat keys
                 dynamic fieldValue = record[field.id];
                 if (field.type == FieldType.customLabel) {
@@ -615,7 +669,6 @@ class _RecordForm extends StatelessWidget {
                         onFieldChanged(field.id, value);
                       }
                     },
-                    hasError: hasError,
                   ),
                 );
               }).toList(),

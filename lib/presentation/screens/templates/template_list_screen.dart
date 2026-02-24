@@ -1,20 +1,21 @@
 import 'package:flutter/material.dart';
+import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:go_router/go_router.dart';
 
-import '../../../core/app_state.dart';
+import '../../../core/providers.dart';
 import '../../../core/theme/app_theme.dart';
 import '../../../data/models/template.dart';
 import '../../widgets/layout/app_scaffold.dart';
 
 /// Template list screen.
-class TemplateListScreen extends StatefulWidget {
+class TemplateListScreen extends ConsumerStatefulWidget {
   const TemplateListScreen({super.key});
 
   @override
-  State<TemplateListScreen> createState() => _TemplateListScreenState();
+  ConsumerState<TemplateListScreen> createState() => _TemplateListScreenState();
 }
 
-class _TemplateListScreenState extends State<TemplateListScreen>
+class _TemplateListScreenState extends ConsumerState<TemplateListScreen>
     with SingleTickerProviderStateMixin, RouteAware {
   late AnimationController _animationController;
   List<Template> _templates = [];
@@ -44,9 +45,9 @@ class _TemplateListScreenState extends State<TemplateListScreen>
 
   Future<void> _loadData() async {
     // Clear cache to ensure fresh data
-    AppState.instance.templateRepository.clearCache();
+    ref.read(templateRepoProvider).clearCache();
     setState(() {
-      _templates = AppState.instance.templateRepository.getAll();
+      _templates = ref.read(templateRepoProvider).getAll();
       _isLoading = false;
     });
     _animationController.forward(from: 0);
@@ -75,7 +76,7 @@ class _TemplateListScreenState extends State<TemplateListScreen>
     );
 
     if (confirmed == true && mounted) {
-      await AppState.instance.templateRepository.delete(template.templateId);
+      await ref.read(templateRepoProvider).delete(template.templateId);
       _loadData();
       if (mounted) {
         ScaffoldMessenger.of(context).showSnackBar(
@@ -181,22 +182,27 @@ class _TemplateListScreenState extends State<TemplateListScreen>
     final startTime = 0.1 * index;
     final endTime = startTime + 0.4;
 
-    return AnimatedBuilder(
-      animation: _animationController,
-      builder: (context, _) {
-        final progress = Curves.easeOutCubic.transform(
-          (((_animationController.value - startTime) / (endTime - startTime))
-              .clamp(0.0, 1.0)),
-        );
-
-        return Opacity(
-          opacity: progress,
-          child: Transform.translate(
-            offset: Offset(0, 20 * (1 - progress)),
-            child: child,
+    final opacity = _animationController.drive(
+      Tween<double>(begin: 0.0, end: 1.0).chain(
+        CurveTween(
+          curve: Interval(
+            startTime.clamp(0.0, 1.0),
+            endTime.clamp(0.0, 1.0),
+            curve: Curves.easeOutCubic,
           ),
-        );
-      },
+        ),
+      ),
+    );
+
+    return FadeTransition(
+      opacity: opacity,
+      child: AnimatedBuilder(
+        animation: opacity,
+        builder: (context, _) => Transform.translate(
+          offset: Offset(0, 20 * (1 - opacity.value)),
+          child: child,
+        ),
+      ),
     );
   }
 

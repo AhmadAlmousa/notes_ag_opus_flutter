@@ -1,6 +1,7 @@
 import 'package:flutter/material.dart';
+import 'package:flutter_riverpod/flutter_riverpod.dart';
 
-import 'core/app_state.dart';
+import 'core/providers.dart';
 import 'core/router.dart';
 import 'core/theme/app_theme.dart';
 import 'data/services/fs_interop.dart';
@@ -8,79 +9,63 @@ import 'presentation/screens/setup/setup_screen.dart';
 
 void main() {
   WidgetsFlutterBinding.ensureInitialized();
-  runApp(const OrganoteApp());
+  runApp(const ProviderScope(child: OrganoteApp()));
 }
 
 /// Main application widget.
-class OrganoteApp extends StatefulWidget {
+class OrganoteApp extends ConsumerWidget {
   const OrganoteApp({super.key});
 
   @override
-  State<OrganoteApp> createState() => _OrganoteAppState();
-}
+  Widget build(BuildContext context, WidgetRef ref) {
+    final initAsync = ref.watch(appInitProvider);
 
-class _OrganoteAppState extends State<OrganoteApp> {
-  late Future<void> _initFuture;
-
-  @override
-  void initState() {
-    super.initState();
-    _initFuture = AppState.instance.initialize();
-    AppState.instance.addListener(_onStateChanged);
-  }
-
-  @override
-  void dispose() {
-    AppState.instance.removeListener(_onStateChanged);
-    super.dispose();
-  }
-
-  void _onStateChanged() {
-    if (mounted) setState(() {});
-  }
-
-  @override
-  Widget build(BuildContext context) {
-    return FutureBuilder(
-      future: _initFuture,
-      builder: (context, snapshot) {
-        if (snapshot.connectionState != ConnectionState.done) {
-          return MaterialApp(
-            debugShowCheckedModeBanner: false,
-            theme: AppTheme.lightTheme,
-            darkTheme: AppTheme.darkTheme,
-            themeMode: ThemeMode.system,
-            home: const _SplashScreen(),
-          );
-        }
-
+    return initAsync.when(
+      loading: () => MaterialApp(
+        debugShowCheckedModeBanner: false,
+        theme: AppTheme.lightTheme,
+        darkTheme: AppTheme.darkTheme,
+        themeMode: ThemeMode.system,
+        home: const _SplashScreen(),
+      ),
+      error: (error, stack) => MaterialApp(
+        debugShowCheckedModeBanner: false,
+        home: Scaffold(
+          body: Center(child: Text('Initialization error: $error')),
+        ),
+      ),
+      data: (init) {
         // Show setup screen if storage not yet configured
-        if (!AppState.instance.storageConfigured) {
+        if (!init.storageConfigured) {
           return MaterialApp(
             title: 'Organote',
             debugShowCheckedModeBanner: false,
             theme: AppTheme.lightTheme,
             darkTheme: AppTheme.darkTheme,
-            themeMode: AppState.instance.themeMode,
+            themeMode: init.themeMode,
             home: SetupScreen(
               onComplete: () async {
-                // Determine which storage was configured
                 final storageType = FileSystemInterop.currentStorageType;
-                await AppState.instance.completeStorageSetup(
+                await completeStorageSetup(
+                  ref,
                   storageType == 'none' ? 'local' : storageType,
                 );
-                if (mounted) setState(() {});
               },
             ),
           );
         }
+
+        final themeMode = ref.watch(themeModeProvider);
+
+        // Start sync in background (non-blocking)
+        Future.microtask(() => initSync(ref));
 
         return MaterialApp.router(
           title: 'Organote',
           debugShowCheckedModeBanner: false,
           theme: AppTheme.lightTheme,
           darkTheme: AppTheme.darkTheme,
-          themeMode: AppState.instance.themeMode,
+          themeMode: themeMode,
           routerConfig: AppRouter.router,
         );
       },

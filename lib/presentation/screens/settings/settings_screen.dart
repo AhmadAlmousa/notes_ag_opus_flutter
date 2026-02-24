@@ -1,19 +1,20 @@
 import 'package:flutter/material.dart';
+import 'package:flutter_riverpod/flutter_riverpod.dart';
 
-import '../../../core/app_state.dart';
+import '../../../core/providers.dart';
 import '../../../core/export_import_service.dart';
 import '../../../core/theme/app_theme.dart';
 import '../../widgets/layout/app_scaffold.dart';
 
 /// Settings screen.
-class SettingsScreen extends StatefulWidget {
+class SettingsScreen extends ConsumerStatefulWidget {
   const SettingsScreen({super.key});
 
   @override
-  State<SettingsScreen> createState() => _SettingsScreenState();
+  ConsumerState<SettingsScreen> createState() => _SettingsScreenState();
 }
 
-class _SettingsScreenState extends State<SettingsScreen>
+class _SettingsScreenState extends ConsumerState<SettingsScreen>
     with SingleTickerProviderStateMixin {
   late AnimationController _animationController;
 
@@ -35,7 +36,6 @@ class _SettingsScreenState extends State<SettingsScreen>
   @override
   Widget build(BuildContext context) {
     final theme = Theme.of(context);
-    final appState = AppState.instance;
 
     return AppScaffold(
       currentIndex: 3,
@@ -80,7 +80,7 @@ class _SettingsScreenState extends State<SettingsScreen>
                       'Appearance',
                       Icons.palette_outlined,
                       [
-                        _buildThemeSetting(context, appState),
+                        _buildThemeSetting(context),
                       ],
                     ),
 
@@ -95,13 +95,13 @@ class _SettingsScreenState extends State<SettingsScreen>
                         _buildInfoTile(
                           context,
                           'Templates',
-                          '${appState.templateRepository.getAll().length} created',
+                          '${ref.read(templateRepoProvider).getAll().length} created',
                           Icons.extension_outlined,
                         ),
                         _buildInfoTile(
                           context,
                           'Notes',
-                          '${appState.noteRepository.getAll().length} saved',
+                          '${ref.read(noteRepoProvider).getAll().length} saved',
                           Icons.note_outlined,
                         ),
                       ],
@@ -118,14 +118,14 @@ class _SettingsScreenState extends State<SettingsScreen>
                         _buildInfoTile(
                           context,
                           'Storage Type',
-                          _getStorageLabel(appState.storageType),
+                          _getStorageLabel(ref.read(storageTypeProvider)),
                           Icons.dns_outlined,
                         ),
-                        if (appState.storageDirectoryName != null)
+                        if (ref.read(storageDirectoryNameProvider) != null)
                           _buildInfoTile(
                             context,
                             'Directory',
-                            appState.storageDirectoryName!,
+                            ref.read(storageDirectoryNameProvider)!,
                             Icons.folder_open,
                           ),
                       ],
@@ -140,6 +140,18 @@ class _SettingsScreenState extends State<SettingsScreen>
                       Icons.import_export,
                       [
                         _buildImportExportButtons(context),
+                      ],
+                    ),
+
+                    const SizedBox(height: 16),
+
+                    // Cloud Sync section
+                    _buildSection(
+                      context,
+                      'Cloud Sync',
+                      Icons.cloud_sync_outlined,
+                      [
+                        _buildSyncSettings(context),
                       ],
                     ),
 
@@ -227,7 +239,7 @@ class _SettingsScreenState extends State<SettingsScreen>
     );
   }
 
-  Widget _buildThemeSetting(BuildContext context, AppState appState) {
+  Widget _buildThemeSetting(BuildContext context) {
     final theme = Theme.of(context);
 
     return Padding(
@@ -241,9 +253,9 @@ class _SettingsScreenState extends State<SettingsScreen>
             ),
           ),
           SegmentedButton<ThemeMode>(
-            selected: {appState.themeMode},
+            selected: {ref.watch(themeModeProvider)},
             onSelectionChanged: (selection) {
-              appState.setThemeMode(selection.first);
+              ref.read(themeModeProvider.notifier).setThemeMode(selection.first);
             },
             segments: const [
               ButtonSegment(
@@ -317,7 +329,10 @@ class _SettingsScreenState extends State<SettingsScreen>
           SizedBox(
             width: double.infinity,
             child: ElevatedButton.icon(
-              onPressed: () => ExportImportService.exportNotesToZip(context),
+              onPressed: () => ExportImportService.exportNotesToZip(
+                context,
+                storage: ref.read(storageProvider),
+              ),
               icon: const Icon(Icons.download),
               label: const Text('Export All Notes'),
               style: ElevatedButton.styleFrom(
@@ -331,7 +346,11 @@ class _SettingsScreenState extends State<SettingsScreen>
           SizedBox(
             width: double.infinity,
             child: OutlinedButton.icon(
-              onPressed: () => ExportImportService.importFromZip(context),
+              onPressed: () => ExportImportService.importFromZip(
+                context,
+                storage: ref.read(storageProvider),
+                noteRepo: ref.read(noteRepoProvider),
+              ),
               icon: const Icon(Icons.upload),
               label: const Text('Import Notes'),
               style: OutlinedButton.styleFrom(
@@ -348,6 +367,157 @@ class _SettingsScreenState extends State<SettingsScreen>
             style: Theme.of(context).textTheme.bodySmall?.copyWith(
               color: Theme.of(context).colorScheme.onSurfaceVariant,
             ),
+          ),
+        ],
+      ),
+    );
+  }
+
+  Widget _buildSyncSettings(BuildContext context) {
+    final theme = Theme.of(context);
+    final storage = ref.read(storageProvider);
+    final isConnected = ref.watch(syncStatusProvider);
+    final useEnv = storage.getSetting<bool>('sync_use_env') ?? false;
+
+    return Padding(
+      padding: const EdgeInsets.fromLTRB(16, 0, 16, 16),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          // Connection status
+          Row(
+            children: [
+              Container(
+                width: 10,
+                height: 10,
+                decoration: BoxDecoration(
+                  shape: BoxShape.circle,
+                  color: isConnected ? Colors.green : Colors.red.shade400,
+                ),
+              ),
+              const SizedBox(width: 8),
+              Text(
+                isConnected ? 'Connected' : 'Disconnected',
+                style: theme.textTheme.bodyMedium?.copyWith(
+                  color: isConnected ? Colors.green : Colors.red.shade400,
+                  fontWeight: FontWeight.w600,
+                ),
+              ),
+            ],
+          ),
+          const SizedBox(height: 16),
+
+          // Use env variables checkbox
+          CheckboxListTile(
+            contentPadding: EdgeInsets.zero,
+            title: const Text('Use environment variables'),
+            subtitle: const Text(
+              'Read SUPABASE_URL and SUPABASE_ANON_KEY from --dart-define',
+            ),
+            value: useEnv,
+            onChanged: (value) async {
+              await storage.setSetting('sync_use_env', value ?? false);
+              setState(() {});
+            },
+          ),
+
+          if (!useEnv) ...[
+            const SizedBox(height: 8),
+            // Supabase URL
+            TextField(
+              decoration: InputDecoration(
+                labelText: 'Supabase URL',
+                hintText: 'https://your-project.supabase.co',
+                border: const OutlineInputBorder(),
+                prefixIcon: const Icon(Icons.link),
+                isDense: true,
+                filled: true,
+                fillColor: theme.colorScheme.surfaceContainerHighest
+                    .withValues(alpha: 0.3),
+              ),
+              controller: TextEditingController(
+                text: storage.getSetting<String>('sync_supabase_url') ?? '',
+              ),
+              onChanged: (value) {
+                storage.setSetting('sync_supabase_url', value.trim());
+              },
+            ),
+            const SizedBox(height: 12),
+            // Anon key
+            TextField(
+              decoration: InputDecoration(
+                labelText: 'Supabase Anon Key',
+                hintText: 'eyJhbGciOi...',
+                border: const OutlineInputBorder(),
+                prefixIcon: const Icon(Icons.key),
+                isDense: true,
+                filled: true,
+                fillColor: theme.colorScheme.surfaceContainerHighest
+                    .withValues(alpha: 0.3),
+              ),
+              controller: TextEditingController(
+                text: storage.getSetting<String>('sync_supabase_key') ?? '',
+              ),
+              obscureText: true,
+              onChanged: (value) {
+                storage.setSetting('sync_supabase_key', value.trim());
+              },
+            ),
+          ],
+
+          const SizedBox(height: 16),
+
+          // Action buttons
+          Row(
+            children: [
+              Expanded(
+                child: OutlinedButton.icon(
+                  onPressed: () async {
+                    if (isConnected) {
+                      ref.read(syncServiceProvider).disconnect();
+                      ref.read(syncStatusProvider.notifier).setConnected(false);
+                    } else {
+                      final success = await initSync(ref);
+                      if (context.mounted) {
+                        ScaffoldMessenger.of(context).showSnackBar(
+                          SnackBar(
+                            content: Text(success
+                                ? 'Connected to Supabase!'
+                                : 'Failed to connect. Check credentials.'),
+                            backgroundColor:
+                                success ? Colors.green : Colors.red,
+                          ),
+                        );
+                      }
+                    }
+                    setState(() {});
+                  },
+                  icon: Icon(
+                      isConnected ? Icons.cloud_off : Icons.cloud_outlined),
+                  label: Text(isConnected ? 'Disconnect' : 'Connect'),
+                ),
+              ),
+              const SizedBox(width: 12),
+              Expanded(
+                child: ElevatedButton.icon(
+                  onPressed: isConnected
+                      ? () async {
+                          await ref.read(syncServiceProvider).pushAll();
+                          if (context.mounted) {
+                            ScaffoldMessenger.of(context).showSnackBar(
+                              const SnackBar(
+                                content: Text('All data synced!'),
+                                backgroundColor: Colors.green,
+                              ),
+                            );
+                          }
+                        }
+                      : null,
+                  icon: const Icon(Icons.sync),
+                  label: const Text('Sync Now'),
+                ),
+              ),
+            ],
           ),
         ],
       ),
@@ -419,7 +589,7 @@ class _SettingsScreenState extends State<SettingsScreen>
           ),
           TextButton(
             onPressed: () async {
-              await AppState.instance.storage.clearAll();
+               await ref.read(storageProvider).clearAll();
               if (context.mounted) {
                 Navigator.pop(context);
                 ScaffoldMessenger.of(context).showSnackBar(

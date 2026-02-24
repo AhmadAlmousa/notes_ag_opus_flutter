@@ -1,23 +1,24 @@
 import 'package:flutter/material.dart';
+import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:go_router/go_router.dart';
 
-import '../../../core/app_state.dart';
+import '../../../core/providers.dart';
 import '../../../core/theme/app_theme.dart';
 import '../../../core/utils/sanitizers.dart';
 import '../../../data/models/field.dart';
 import '../../../data/models/template.dart';
 
 /// Template builder/editor screen.
-class TemplateBuilderScreen extends StatefulWidget {
+class TemplateBuilderScreen extends ConsumerStatefulWidget {
   const TemplateBuilderScreen({super.key, this.templateId});
 
   final String? templateId;
 
   @override
-  State<TemplateBuilderScreen> createState() => _TemplateBuilderScreenState();
+  ConsumerState<TemplateBuilderScreen> createState() => _TemplateBuilderScreenState();
 }
 
-class _TemplateBuilderScreenState extends State<TemplateBuilderScreen> {
+class _TemplateBuilderScreenState extends ConsumerState<TemplateBuilderScreen> {
   late Template _template;
   late TextEditingController _nameController;
   late TextEditingController _idController;
@@ -33,15 +34,15 @@ class _TemplateBuilderScreenState extends State<TemplateBuilderScreen> {
   void _loadTemplate() {
     if (widget.templateId != null) {
       final existing =
-          AppState.instance.templateRepository.getById(widget.templateId!);
+          ref.read(templateRepoProvider).getById(widget.templateId!);
       if (existing != null) {
         _template = existing;
         _isNew = false;
       } else {
-        _template = AppState.instance.templateRepository.createNew();
+        _template = ref.read(templateRepoProvider).createNew();
       }
     } else {
-      _template = AppState.instance.templateRepository.createNew();
+      _template = ref.read(templateRepoProvider).createNew();
     }
 
     _nameController = TextEditingController(text: _template.name);
@@ -139,7 +140,7 @@ class _TemplateBuilderScreenState extends State<TemplateBuilderScreen> {
       version: _isNew ? 1 : _template.version + 1,
     );
 
-    await AppState.instance.templateRepository.save(updatedTemplate);
+    await ref.read(templateRepoProvider).save(updatedTemplate);
 
     if (mounted) {
       ScaffoldMessenger.of(context).showSnackBar(

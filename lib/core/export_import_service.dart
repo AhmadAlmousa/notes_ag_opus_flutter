@@ -7,17 +7,19 @@ import 'package:file_saver/file_saver.dart';
 import 'package:flutter/material.dart';
 import 'package:intl/intl.dart';
 
+import '../data/repositories/note_repository.dart';
 import '../data/services/storage_service.dart';
-import 'app_state.dart';
 
 /// Service for exporting and importing notes as zip files.
 class ExportImportService {
   const ExportImportService._();
 
   /// Export all notes as a zip file download.
-  static Future<void> exportNotesToZip(BuildContext context) async {
+  static Future<void> exportNotesToZip(
+    BuildContext context, {
+    required StorageService storage,
+  }) async {
     try {
-      final storage = AppState.instance.storage;
       final notes = storage.getNotes();
       final templates = storage.getTemplates();
 
@@ -90,7 +92,11 @@ class ExportImportService {
   }
 
   /// Import notes from a zip file.
-  static Future<void> importFromZip(BuildContext context) async {
+  static Future<void> importFromZip(
+    BuildContext context, {
+    required StorageService storage,
+    required NoteRepository noteRepo,
+  }) async {
     try {
       // Pick zip file
       final result = await FilePicker.platform.pickFiles(
@@ -114,7 +120,6 @@ class ExportImportService {
       // Decode zip
       final archive = ZipDecoder().decodeBytes(file.bytes!);
       
-      final storage = AppState.instance.storage;
       int notesImported = 0;
       int templatesImported = 0;
 
@@ -144,8 +149,7 @@ class ExportImportService {
       }
 
       // Clear caches to reload data
-      AppState.instance.noteRepository.clearCache();
-      // Templates don't have a cache method, but they're loaded fresh each time
+      noteRepo.clearCache();
 
       ScaffoldMessenger.of(context).showSnackBar(
         SnackBar(

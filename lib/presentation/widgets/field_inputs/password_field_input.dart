@@ -48,34 +48,24 @@ class _PasswordFieldInputState extends State<PasswordFieldInput> {
 
   @override
   Widget build(BuildContext context) {
-    return TextField(
+    return TextFormField(
       controller: _controller,
       onChanged: widget.onChanged,
       obscureText: !_isVisible,
+      validator: widget.field.required
+          ? (v) => (v == null || v.trim().isEmpty)
+              ? '${widget.field.label} is required'
+              : null
+          : null,
+      autovalidateMode: AutovalidateMode.onUserInteraction,
       decoration: InputDecoration(
         labelText: widget.field.label,
-        labelStyle: widget.hasError 
-            ? TextStyle(color: Colors.red.shade700)
-            : null,
         hintText: 'Enter ${widget.field.label.toLowerCase()}',
         prefixIcon: const Icon(Icons.lock),
         suffixIcon: IconButton(
           icon: Icon(_isVisible ? Icons.visibility_off : Icons.visibility),
           onPressed: () => setState(() => _isVisible = !_isVisible),
         ),
-        errorText: widget.hasError ? 'This field is required' : null,
-        enabledBorder: widget.hasError
-            ? OutlineInputBorder(
-                borderRadius: BorderRadius.circular(8),
-                borderSide: const BorderSide(color: Colors.red, width: 1.5),
-              )
-            : null,
-        focusedBorder: widget.hasError
-            ? OutlineInputBorder(
-                borderRadius: BorderRadius.circular(8),
-                borderSide: const BorderSide(color: Colors.red, width: 2),
-              )
-            : null,
       ),
     );
   }

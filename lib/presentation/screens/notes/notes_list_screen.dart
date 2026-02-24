@@ -1,23 +1,24 @@
 import 'package:flutter/material.dart';
+import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:go_router/go_router.dart';
 
-import '../../../core/app_state.dart';
+import '../../../core/providers.dart';
 import '../../../core/theme/app_theme.dart';
 import '../../../data/models/note.dart';
 import '../../widgets/common/note_card.dart';
 import '../../widgets/layout/app_scaffold.dart';
 
 /// Notes list screen.
-class NotesListScreen extends StatefulWidget {
+class NotesListScreen extends ConsumerStatefulWidget {
   const NotesListScreen({super.key, this.category});
 
   final String? category;
 
   @override
-  State<NotesListScreen> createState() => _NotesListScreenState();
+  ConsumerState<NotesListScreen> createState() => _NotesListScreenState();
 }
 
-class _NotesListScreenState extends State<NotesListScreen>
+class _NotesListScreenState extends ConsumerState<NotesListScreen>
     with SingleTickerProviderStateMixin {
   late AnimationController _animationController;
   List<Note> _notes = [];
@@ -45,14 +46,6 @@ class _NotesListScreenState extends State<NotesListScreen>
     }
   }
 
-  @override
-  void didChangeDependencies() {
-    super.didChangeDependencies();
-    // Reload data every time this screen becomes visible
-    if (!_isLoading) {
-      _loadData();
-    }
-  }
 
   @override
   void dispose() {
@@ -61,17 +54,16 @@ class _NotesListScreenState extends State<NotesListScreen>
   }
 
   Future<void> _loadData() async {
-    final noteRepo = AppState.instance.noteRepository;
+    final noteRepo = ref.read(noteRepoProvider);
+    final categories = ['all', ...noteRepo.getCategories()];
+    final notes = _selectedCategory == 'all'
+        ? noteRepo.getAll()
+        : noteRepo.getByCategory(_selectedCategory);
 
+    if (!mounted) return;
     setState(() {
-      _categories = ['all', ...noteRepo.getCategories()];
-
-      if (_selectedCategory == 'all') {
-        _notes = noteRepo.getAll();
-      } else {
-        _notes = noteRepo.getByCategory(_selectedCategory);
-      }
-
+      _categories = categories;
+      _notes = notes;
       _isLoading = false;
     });
 
@@ -87,6 +79,9 @@ class _NotesListScreenState extends State<NotesListScreen>
 
   @override
   Widget build(BuildContext context) {
+    // Reload data when remote sync changes arrive
+    ref.listen(syncTriggerProvider, (_, __) => _loadData());
+
     final theme = Theme.of(context);
 
     return AppScaffold(
@@ -186,9 +181,10 @@ class _NotesListScreenState extends State<NotesListScreen>
                             Padding(
                               padding: const EdgeInsets.only(bottom: 12),
                               child: NoteCard(
+                                key: ValueKey(_notes[index].id),
                                 note: _notes[index],
                                 onTap: () => _openNote(_notes[index]),
-                                templateName: AppState.instance.templateRepository
+                                templateName: ref.read(templateRepoProvider)
                                     .getById(_notes[index].templateId)
                                     ?.name,
                               ),
@@ -208,22 +204,27 @@ class _NotesListScreenState extends State<NotesListScreen>
     final startTime = 0.1 * index;
     final endTime = startTime + 0.4;
 
-    return AnimatedBuilder(
-      animation: _animationController,
-      builder: (context, _) {
-        final progress = Curves.easeOutCubic.transform(
-          (((_animationController.value - startTime) / (endTime - startTime))
-              .clamp(0.0, 1.0)),
-        );
-
-        return Opacity(
-          opacity: progress,
-          child: Transform.translate(
-            offset: Offset(0, 20 * (1 - progress)),
-            child: child,
+    final opacity = _animationController.drive(
+      Tween<double>(begin: 0.0, end: 1.0).chain(
+        CurveTween(
+          curve: Interval(
+            startTime.clamp(0.0, 1.0),
+            endTime.clamp(0.0, 1.0),
+            curve: Curves.easeOutCubic,
           ),
-        );
-      },
+        ),
+      ),
+    );
+
+    return FadeTransition(
+      opacity: opacity,
+      child: AnimatedBuilder(
+        animation: opacity,
+        builder: (context, _) => Transform.translate(
+          offset: Offset(0, 20 * (1 - opacity.value)),
+          child: child,
+        ),
+      ),
     );
   }
 

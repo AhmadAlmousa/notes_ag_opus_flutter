@@ -1,8 +1,9 @@
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
+import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:go_router/go_router.dart';
 
-import '../../../core/app_state.dart';
+import '../../../core/providers.dart';
 import '../../../core/theme/app_theme.dart';
 import '../../../core/utils/date_utils.dart';
 import '../../../data/models/field.dart';
@@ -10,7 +11,7 @@ import '../../../data/models/note.dart';
 import '../../../data/models/template.dart';
 
 /// Note view screen with multiple layout options.
-class NoteViewScreen extends StatefulWidget {
+class NoteViewScreen extends ConsumerStatefulWidget {
   const NoteViewScreen({
     super.key,
     required this.category,
@@ -21,10 +22,10 @@ class NoteViewScreen extends StatefulWidget {
   final String filename;
 
   @override
-  State<NoteViewScreen> createState() => _NoteViewScreenState();
+  ConsumerState<NoteViewScreen> createState() => _NoteViewScreenState();
 }
 
-class _NoteViewScreenState extends State<NoteViewScreen>
+class _NoteViewScreenState extends ConsumerState<NoteViewScreen>
     with SingleTickerProviderStateMixin {
   late AnimationController _animationController;
   Note? _note;
@@ -48,16 +49,17 @@ class _NoteViewScreenState extends State<NoteViewScreen>
   }
 
   Future<void> _loadData() async {
-    final note = AppState.instance.noteRepository.getNote(
+    final note = ref.read(noteRepoProvider).getNote(
       widget.category,
       widget.filename,
     );
 
     Template? template;
     if (note != null) {
-      template = AppState.instance.templateRepository.getById(note.templateId);
+      template = ref.read(templateRepoProvider).getById(note.templateId);
     }
 
+    if (!mounted) return;
     setState(() {
       _note = note;
       _template = template;
@@ -113,6 +115,9 @@ class _NoteViewScreenState extends State<NoteViewScreen>
 
   @override
   Widget build(BuildContext context) {
+    // Reload data when remote sync changes arrive
+    ref.listen(syncTriggerProvider, (_, __) => _loadData());
+
     if (_isLoading) {
       return const Scaffold(
         body: Center(child: CircularProgressIndicator()),
@@ -228,7 +233,7 @@ class _NoteViewScreenState extends State<NoteViewScreen>
                 );
 
                 if (confirm == true && mounted) {
-                  await AppState.instance.noteRepository.delete(
+                  await ref.read(noteRepoProvider).delete(
                     widget.category,
                     widget.filename,
                   );

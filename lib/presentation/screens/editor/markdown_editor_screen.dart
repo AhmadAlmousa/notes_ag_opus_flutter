@@ -1,14 +1,20 @@
+import 'dart:async';
+
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
-import 'package:flutter_markdown/flutter_markdown.dart';
+import 'package:flutter_markdown_plus/flutter_markdown_plus.dart';
+import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:go_router/go_router.dart';
 
-import '../../../core/app_state.dart';
+import '../../../core/providers.dart';
 import '../../../core/theme/app_theme.dart';
 import '../../../data/models/note.dart';
 
+/// Save state for markdown editor.
+enum _MdSaveState { unsaved, saving, saved }
+
 /// Markdown source editor with split-pane preview.
-class MarkdownEditorScreen extends StatefulWidget {
+class MarkdownEditorScreen extends ConsumerStatefulWidget {
   const MarkdownEditorScreen({
     super.key,
     required this.category,
@@ -19,16 +25,18 @@ class MarkdownEditorScreen extends StatefulWidget {
   final String filename;
 
   @override
-  State<MarkdownEditorScreen> createState() => _MarkdownEditorScreenState();
+  ConsumerState<MarkdownEditorScreen> createState() => _MarkdownEditorScreenState();
 }
 
-class _MarkdownEditorScreenState extends State<MarkdownEditorScreen> {
+class _MarkdownEditorScreenState extends ConsumerState<MarkdownEditorScreen> {
   late TextEditingController _controller;
   Note? _note;
   String _originalContent = '';
   bool _isLoading = true;
   bool _hasChanges = false;
   bool _showPreview = false;
+  Timer? _autoSaveTimer;
+  _MdSaveState _saveState = _MdSaveState.unsaved;
 
   @override
   void initState() {
@@ -39,12 +47,17 @@ class _MarkdownEditorScreenState extends State<MarkdownEditorScreen> {
 
   @override
   void dispose() {
+    _autoSaveTimer?.cancel();
+    // Final save on dispose if there are unsaved changes
+    if (_hasChanges && _note != null && _controller.text != _originalContent) {
+      _performSave();
+    }
     _controller.dispose();
     super.dispose();
   }
 
   Future<void> _loadData() async {
-    _note = AppState.instance.noteRepository.getNote(
+    _note = ref.read(noteRepoProvider).getNote(
       widget.category,
       widget.filename,
     );
@@ -63,37 +76,46 @@ class _MarkdownEditorScreenState extends State<MarkdownEditorScreen> {
     if (!_hasChanges && _controller.text != _originalContent) {
       setState(() {
         _hasChanges = true;
+        _saveState = _MdSaveState.unsaved;
       });
     }
+    // Restart 2-second auto-save debounce
+    _autoSaveTimer?.cancel();
+    _autoSaveTimer = Timer(const Duration(seconds: 2), _autoSave);
   }
 
-  Future<void> _save() async {
+  /// Silently auto-saves without snackbar.
+  Future<void> _autoSave() async {
+    if (!mounted || _note == null) return;
+    if (_controller.text == _originalContent) return;
+    setState(() => _saveState = _MdSaveState.saving);
+    await _performSave();
+    if (mounted) setState(() => _saveState = _MdSaveState.saved);
+  }
+
+  /// Core save logic.
+  Future<void> _performSave() async {
     if (_note == null) return;
 
-    // For now, save the raw markdown
-    await AppState.instance.storage.saveNote(
+    await ref.read(storageProvider).saveNote(
       widget.category,
       widget.filename,
       _controller.text,
     );
 
     // Clear cache so it gets reparsed
-    AppState.instance.noteRepository.clearCache();
+    ref.read(noteRepoProvider).clearCache();
+
+    // Push to cloud
+    ref.read(syncServiceProvider).pushDocument(
+      'notes/${widget.category}/${widget.filename}',
+      _controller.text,
+    );
 
     setState(() {
       _originalContent = _controller.text;
       _hasChanges = false;
     });
-
-    if (mounted) {
-      ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(
-          content: Text('Saved!'),
-          backgroundColor: Colors.green,
-          duration: Duration(seconds: 1),
-        ),
-      );
-    }
   }
 
   Future<bool> _onWillPop() async {
@@ -145,7 +167,7 @@ class _MarkdownEditorScreenState extends State<MarkdownEditorScreen> {
         appBar: _buildAppBar(theme),
         body: CallbackShortcuts(
           bindings: {
-            const SingleActivator(LogicalKeyboardKey.keyS, control: true): _save,
+            const SingleActivator(LogicalKeyboardKey.keyS, control: true): () => _autoSave(),
           },
           child: Focus(
             autofocus: true,
@@ -163,7 +185,24 @@ class _MarkdownEditorScreenState extends State<MarkdownEditorScreen> {
           const Icon(Icons.code, size: 20),
           const SizedBox(width: 8),
           const Text('Source'),
-          if (_hasChanges)
+          if (_saveState == _MdSaveState.saving) ...[
+            const SizedBox(width: 12),
+            const SizedBox(
+              width: 14, height: 14,
+              child: CircularProgressIndicator(strokeWidth: 2),
+            ),
+            const SizedBox(width: 6),
+            Text('Saving...', style: TextStyle(
+              fontSize: 12, color: theme.colorScheme.onSurfaceVariant,
+            )),
+          ] else if (_saveState == _MdSaveState.saved) ...[
+            const SizedBox(width: 12),
+            const Icon(Icons.check_circle, size: 16, color: Colors.green),
+            const SizedBox(width: 4),
+            Text('Saved', style: TextStyle(
+              fontSize: 12, color: Colors.green.shade600,
+            )),
+          ] else if (_hasChanges) ...[
             Container(
               margin: const EdgeInsets.only(left: 8),
               padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 2),
@@ -180,6 +219,7 @@ class _MarkdownEditorScreenState extends State<MarkdownEditorScreen> {
                 ),
               ),
             ),
+          ],
         ],
       ),
       actions: [
@@ -193,16 +233,6 @@ class _MarkdownEditorScreenState extends State<MarkdownEditorScreen> {
             onPressed: () => setState(() => _showPreview = !_showPreview),
             tooltip: _showPreview ? 'Edit' : 'Preview',
           ),
-        // Save button
-        TextButton.icon(
-          onPressed: _hasChanges ? _save : null,
-          icon: const Icon(Icons.save),
-          label: const Text('Save'),
-          style: TextButton.styleFrom(
-            foregroundColor:
-                _hasChanges ? AppTheme.primaryColor : theme.disabledColor,
-          ),
-        ),
       ],
     );
   }
