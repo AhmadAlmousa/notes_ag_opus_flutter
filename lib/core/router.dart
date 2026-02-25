@@ -87,6 +87,7 @@ class AppRouter {
           state,
           NotesListScreen(
             category: state.uri.queryParameters['category'],
+            tag: state.uri.queryParameters['tag'],
           ),
         ),
         routes: [

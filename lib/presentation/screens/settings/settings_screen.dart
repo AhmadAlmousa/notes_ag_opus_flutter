@@ -1,6 +1,7 @@
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
+import '../../../core/compliance_checker.dart';
 import '../../../core/providers.dart';
 import '../../../core/export_import_service.dart';
 import '../../../core/theme/app_theme.dart';
@@ -74,6 +75,11 @@ class _SettingsScreenState extends ConsumerState<SettingsScreen>
                 padding: const EdgeInsets.symmetric(horizontal: 20),
                 child: Column(
                   children: [
+                    // Compliance section
+                    _buildComplianceSection(context),
+
+                    const SizedBox(height: 16),
+
                     // Appearance section
                     _buildSection(
                       context,
@@ -190,6 +196,96 @@ class _SettingsScreenState extends ConsumerState<SettingsScreen>
             ),
           ],
         ),
+      ),
+    );
+  }
+
+  Widget _buildComplianceSection(BuildContext context) {
+    final theme = Theme.of(context);
+    final allNotes = ref.read(noteRepoProvider).getAll();
+    final templates = ref.read(templateRepoProvider).getAll();
+    final templateMap = {for (final t in templates) t.templateId: t};
+    final compliance = ComplianceChecker.checkAll(allNotes, templateMap);
+    final isHealthy = compliance.isHealthy;
+
+    return Container(
+      padding: const EdgeInsets.all(16),
+      decoration: BoxDecoration(
+        color: isHealthy
+            ? Colors.green.withValues(alpha: 0.06)
+            : Colors.orange.withValues(alpha: 0.06),
+        borderRadius: BorderRadius.circular(12),
+        border: Border.all(
+          color: isHealthy
+              ? Colors.green.withValues(alpha: 0.3)
+              : Colors.orange.withValues(alpha: 0.3),
+        ),
+      ),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Row(
+            children: [
+              Icon(
+                isHealthy ? Icons.check_circle_outline : Icons.warning_amber_rounded,
+                color: isHealthy ? Colors.green.shade600 : Colors.orange.shade700,
+                size: 20,
+              ),
+              const SizedBox(width: 8),
+              Text(
+                'Compliance Check',
+                style: theme.textTheme.titleSmall?.copyWith(
+                  fontWeight: FontWeight.bold,
+                  color: isHealthy ? Colors.green.shade700 : Colors.orange.shade800,
+                ),
+              ),
+            ],
+          ),
+          const SizedBox(height: 8),
+          if (isHealthy)
+            Text(
+              'All notes are compliant with their templates. ✓',
+              style: theme.textTheme.bodySmall?.copyWith(
+                color: Colors.green.shade700,
+              ),
+            )
+          else ...[
+            Text(
+              compliance.statusText,
+              style: theme.textTheme.bodySmall?.copyWith(
+                color: Colors.orange.shade800,
+                fontWeight: FontWeight.w500,
+              ),
+            ),
+            const SizedBox(height: 8),
+            ...compliance.issues.take(5).map((issue) => Padding(
+              padding: const EdgeInsets.only(bottom: 4),
+              child: Row(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Icon(Icons.circle, size: 6, color: Colors.orange.shade600),
+                  const SizedBox(width: 8),
+                  Expanded(
+                    child: Text(
+                      '${issue.note.getDisplayTitle()} — ${issue.summary}',
+                      style: theme.textTheme.bodySmall?.copyWith(
+                        color: theme.colorScheme.onSurface,
+                      ),
+                    ),
+                  ),
+                ],
+              ),
+            )),
+            if (compliance.issues.length > 5)
+              Text(
+                '...and ${compliance.issues.length - 5} more issues.',
+                style: theme.textTheme.bodySmall?.copyWith(
+                  color: Colors.orange.shade800,
+                  fontStyle: FontStyle.italic,
+                ),
+              ),
+          ],
+        ],
       ),
     );
   }

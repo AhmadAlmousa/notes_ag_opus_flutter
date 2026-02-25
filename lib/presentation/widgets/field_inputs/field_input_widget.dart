@@ -122,8 +122,8 @@ class FieldInputWidget extends StatelessWidget {
           field: field,
           labelValue: labelVal,
           textValue: textVal,
-          onLabelChanged: (l) => onChanged({'label': l, 'value': textVal}),
-          onValueChanged: (v) => onChanged({'label': labelVal, 'value': v}),
+          onLabelChanged: (l) => onChanged({'label': l, 'value': (value is Map ? value['value']?.toString() : null) ?? ''}),
+          onValueChanged: (v) => onChanged({'label': (value is Map ? value['label']?.toString() : null) ?? '', 'value': v}),
           hasError: hasError,
         );
     }

@@ -73,12 +73,54 @@ class OrganoteApp extends ConsumerWidget {
   }
 }
 
-/// Splash screen shown during initialization.
-class _SplashScreen extends StatelessWidget {
+/// Splash screen shown during initialization with progress steps.
+class _SplashScreen extends StatefulWidget {
   const _SplashScreen();
 
   @override
+  State<_SplashScreen> createState() => _SplashScreenState();
+}
+
+class _SplashScreenState extends State<_SplashScreen>
+    with SingleTickerProviderStateMixin {
+  late AnimationController _iconAnimController;
+  int _currentStep = 0;
+
+  static const _steps = [
+    'Connecting storage...',
+    'Loading templates...',
+    'Building search index...',
+    'Starting sync...',
+  ];
+
+  @override
+  void initState() {
+    super.initState();
+    _iconAnimController = AnimationController(
+      vsync: this,
+      duration: const Duration(milliseconds: 800),
+    )..forward();
+    _advanceSteps();
+  }
+
+  void _advanceSteps() async {
+    for (int i = 0; i < _steps.length; i++) {
+      await Future.delayed(const Duration(milliseconds: 600));
+      if (mounted) setState(() => _currentStep = i);
+    }
+  }
+
+  @override
+  void dispose() {
+    _iconAnimController.dispose();
+    super.dispose();
+  }
+
+  @override
   Widget build(BuildContext context) {
+    final theme = Theme.of(context);
+    final progress = (_currentStep + 1) / _steps.length;
+
     return Scaffold(
       body: Center(
         child: Column(
@@ -88,12 +130,8 @@ class _SplashScreen extends StatelessWidget {
               tween: Tween(begin: 0.8, end: 1.0),
               duration: const Duration(milliseconds: 800),
               curve: Curves.elasticOut,
-              builder: (context, value, child) {
-                return Transform.scale(
-                  scale: value,
-                  child: child,
-                );
-              },
+              builder: (context, value, child) =>
+                  Transform.scale(scale: value, child: child),
               child: Container(
                 width: 80,
                 height: 80,
@@ -118,15 +156,46 @@ class _SplashScreen extends StatelessWidget {
             const SizedBox(height: 24),
             Text(
               'Organote',
-              style: Theme.of(context).textTheme.headlineSmall?.copyWith(
-                    fontWeight: FontWeight.bold,
-                  ),
+              style: theme.textTheme.headlineSmall?.copyWith(
+                fontWeight: FontWeight.bold,
+              ),
             ),
             const SizedBox(height: 32),
-            const SizedBox(
-              width: 24,
-              height: 24,
-              child: CircularProgressIndicator(strokeWidth: 2),
+
+            // Progress bar
+            SizedBox(
+              width: 200,
+              child: Column(
+                children: [
+                  ClipRRect(
+                    borderRadius: BorderRadius.circular(4),
+                    child: TweenAnimationBuilder<double>(
+                      tween: Tween(begin: 0, end: progress),
+                      duration: const Duration(milliseconds: 400),
+                      curve: Curves.easeOut,
+                      builder: (context, value, _) {
+                        return LinearProgressIndicator(
+                          value: value,
+                          backgroundColor: theme.colorScheme.surfaceContainerHighest,
+                          color: AppTheme.primaryColor,
+                          minHeight: 4,
+                        );
+                      },
+                    ),
+                  ),
+                  const SizedBox(height: 12),
+                  AnimatedSwitcher(
+                    duration: const Duration(milliseconds: 300),
+                    child: Text(
+                      _steps[_currentStep],
+                      key: ValueKey(_currentStep),
+                      style: theme.textTheme.bodySmall?.copyWith(
+                        color: theme.colorScheme.onSurfaceVariant,
+                      ),
+                    ),
+                  ),
+                ],
+              ),
             ),
           ],
         ),
@@ -134,3 +203,4 @@ class _SplashScreen extends StatelessWidget {
     );
   }
 }
+

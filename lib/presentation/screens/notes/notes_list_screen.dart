@@ -10,9 +10,10 @@ import '../../widgets/layout/app_scaffold.dart';
 
 /// Notes list screen.
 class NotesListScreen extends ConsumerStatefulWidget {
-  const NotesListScreen({super.key, this.category});
+  const NotesListScreen({super.key, this.category, this.tag});
 
   final String? category;
+  final String? tag;
 
   @override
   ConsumerState<NotesListScreen> createState() => _NotesListScreenState();
@@ -24,12 +25,14 @@ class _NotesListScreenState extends ConsumerState<NotesListScreen>
   List<Note> _notes = [];
   List<String> _categories = [];
   late String _selectedCategory;
+  String? _activeTag;
   bool _isLoading = true;
 
   @override
   void initState() {
     super.initState();
     _selectedCategory = widget.category ?? 'all';
+    _activeTag = widget.tag;
     _animationController = AnimationController(
       vsync: this,
       duration: const Duration(milliseconds: 600),
@@ -40,8 +43,9 @@ class _NotesListScreenState extends ConsumerState<NotesListScreen>
   @override
   void didUpdateWidget(covariant NotesListScreen oldWidget) {
     super.didUpdateWidget(oldWidget);
-    if (oldWidget.category != widget.category) {
+    if (oldWidget.category != widget.category || oldWidget.tag != widget.tag) {
       _selectedCategory = widget.category ?? 'all';
+      _activeTag = widget.tag;
       _loadData();
     }
   }
@@ -56,17 +60,19 @@ class _NotesListScreenState extends ConsumerState<NotesListScreen>
   Future<void> _loadData() async {
     final noteRepo = ref.read(noteRepoProvider);
     final categories = ['all', ...noteRepo.getCategories()];
-    final notes = _selectedCategory == 'all'
+    List<Note> notes = _selectedCategory == 'all'
         ? noteRepo.getAll()
         : noteRepo.getByCategory(_selectedCategory);
-
+    // Apply tag filter
+    if (_activeTag != null && _activeTag!.isNotEmpty) {
+      notes = notes.where((n) => n.tags.contains(_activeTag)).toList();
+    }
     if (!mounted) return;
     setState(() {
       _categories = categories;
       _notes = notes;
       _isLoading = false;
     });
-
     _animationController.forward(from: 0);
   }
 
@@ -99,14 +105,25 @@ class _NotesListScreenState extends ConsumerState<NotesListScreen>
                       crossAxisAlignment: CrossAxisAlignment.start,
                       children: [
                         Text(
-                          'Files',
+                          _activeTag != null
+                              ? 'Notes tagged "#$_activeTag"'
+                              : 'Files',
                           style: theme.textTheme.headlineSmall?.copyWith(
                             fontWeight: FontWeight.bold,
                           ),
                         ),
+                        if (_activeTag != null)
+                          TextButton.icon(
+                            icon: const Icon(Icons.close, size: 14),
+                            label: const Text('Clear', style: TextStyle(fontSize: 12)),
+                            onPressed: () => setState(() {
+                              _activeTag = null;
+                              _loadData();
+                            }),
+                          ),
                         const SizedBox(height: 4),
                         Text(
-                          '${_notes.length} note${_notes.length != 1 ? 's' : ''}${_selectedCategory != 'all' ? ' in ${_selectedCategory}' : ''}',
+                          '${_notes.length} note${_notes.length != 1 ? 's' : ''}',
                           style: theme.textTheme.bodySmall?.copyWith(
                             color: theme.colorScheme.onSurfaceVariant,
                           ),

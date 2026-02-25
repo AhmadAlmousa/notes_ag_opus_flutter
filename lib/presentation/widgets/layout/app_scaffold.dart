@@ -9,12 +9,14 @@ class AppScaffold extends StatelessWidget {
     required this.currentIndex,
     this.floatingActionButton,
     this.appBar,
+    this.hasSettingsBadge = false,
   });
 
   final Widget body;
   final int currentIndex;
   final Widget? floatingActionButton;
   final PreferredSizeWidget? appBar;
+  final bool hasSettingsBadge;
 
   @override
   Widget build(BuildContext context) {
@@ -22,15 +24,19 @@ class AppScaffold extends StatelessWidget {
       appBar: appBar,
       body: SafeArea(child: body),
       floatingActionButton: floatingActionButton,
-      bottomNavigationBar: _BottomNavBar(currentIndex: currentIndex),
+      bottomNavigationBar: _BottomNavBar(
+        currentIndex: currentIndex,
+        hasSettingsBadge: hasSettingsBadge,
+      ),
     );
   }
 }
 
 class _BottomNavBar extends StatelessWidget {
-  const _BottomNavBar({required this.currentIndex});
+  const _BottomNavBar({required this.currentIndex, this.hasSettingsBadge = false});
 
   final int currentIndex;
+  final bool hasSettingsBadge;
 
   @override
   Widget build(BuildContext context) {
@@ -73,6 +79,7 @@ class _BottomNavBar extends StatelessWidget {
                 icon: Icons.settings_rounded,
                 label: 'Settings',
                 isSelected: currentIndex == 3,
+                showBadge: hasSettingsBadge,
                 onTap: () => context.go('/settings'),
               ),
             ],
@@ -89,12 +96,14 @@ class _NavItem extends StatefulWidget {
     required this.label,
     required this.isSelected,
     required this.onTap,
+    this.showBadge = false,
   });
 
   final IconData icon;
   final String label;
   final bool isSelected;
   final VoidCallback onTap;
+  final bool showBadge;
 
   @override
   State<_NavItem> createState() => _NavItemState();
@@ -164,11 +173,26 @@ class _NavItemState extends State<_NavItem> with SingleTickerProviderStateMixin 
               AnimatedContainer(
                 duration: const Duration(milliseconds: 200),
                 curve: Curves.easeOutCubic,
-                child: Icon(
-                  widget.icon,
-                  color: color,
-                  size: 24,
-                ),
+                child: widget.showBadge
+                    ? Stack(
+                        clipBehavior: Clip.none,
+                        children: [
+                          Icon(widget.icon, color: color, size: 24),
+                          Positioned(
+                            top: -2,
+                            right: -4,
+                            child: Container(
+                              width: 8,
+                              height: 8,
+                              decoration: const BoxDecoration(
+                                color: Colors.orange,
+                                shape: BoxShape.circle,
+                              ),
+                            ),
+                          ),
+                        ],
+                      )
+                    : Icon(widget.icon, color: color, size: 24),
               ),
               const SizedBox(height: 4),
               AnimatedDefaultTextStyle(

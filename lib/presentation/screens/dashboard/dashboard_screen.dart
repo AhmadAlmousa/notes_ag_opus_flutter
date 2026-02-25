@@ -29,7 +29,9 @@ class _DashboardScreenState extends ConsumerState<DashboardScreen>
   List<String> _categories = [];
   String _selectedCategory = 'all';
   bool _isLoading = true;
-  SystemCompliance? _compliance;
+  bool _hasComplianceIssues = false;
+  bool _isSearching = false;
+  final TextEditingController _searchTextController = TextEditingController();
 
   @override
   void initState() {
@@ -48,6 +50,11 @@ class _DashboardScreenState extends ConsumerState<DashboardScreen>
   }
 
   Future<void> _loadData() async {
+    // Refresh caches from file system to detect manually-added files
+    await ref.read(storageProvider).refreshCaches();
+    ref.read(templateRepoProvider).clearCache();
+    ref.read(noteRepoProvider).clearCache();
+
     final appState = ref;
     final templates = appState.read(templateRepoProvider).getAll();
     final allNotes = appState.read(noteRepoProvider).getAll();
@@ -66,17 +73,17 @@ class _DashboardScreenState extends ConsumerState<DashboardScreen>
       _templates = templates;
       _recentNotes = ref.read(noteRepoProvider).getRecent(limit: 10);
       _categories = ['all', ...ref.read(noteRepoProvider).getCategories()];
-      _compliance = compliance;
+      _hasComplianceIssues = !(compliance.isHealthy);
       _isLoading = false;
     });
 
     // Setup staggered animations
     _setupAnimations();
-    _animationController.forward();
+    _animationController.forward(from: 0);
   }
 
   void _setupAnimations() {
-    final itemCount = _recentNotes.length + 3; // header + search + categories
+    final itemCount = _recentNotes.length + 2; // header + categories
     _itemAnimations = List.generate(itemCount, (index) {
       final startTime = 0.1 * index;
       final endTime = startTime + 0.3;
@@ -129,6 +136,7 @@ class _DashboardScreenState extends ConsumerState<DashboardScreen>
 
     return AppScaffold(
       currentIndex: 0,
+      hasSettingsBadge: _hasComplianceIssues,
       floatingActionButton: _buildFab(context),
       body: _isLoading
           ? const Center(child: CircularProgressIndicator())
@@ -139,40 +147,40 @@ class _DashboardScreenState extends ConsumerState<DashboardScreen>
                 slivers: [
                   // Header
                   SliverToBoxAdapter(
-                    child: _buildAnimatedItem(
-                      0,
-                      _buildHeader(context),
-                    ),
+                    child: _buildAnimatedItem(0, _buildHeader(context)),
                   ),
 
-                  // Compliance status
-                  SliverToBoxAdapter(
-                    child: _buildAnimatedItem(
-                      1,
-                      _buildComplianceStatus(context),
-                    ),
-                  ),
-
-                  // Search bar
-                  SliverToBoxAdapter(
-                    child: _buildAnimatedItem(
-                      2,
-                      Padding(
-                        padding: const EdgeInsets.symmetric(horizontal: 20),
-                        child: app.AppSearchBar(
-                          onSearch: _onSearch,
-                          hintText: 'Search notes, tags, or content...',
+                  // Inline search bar (shown when _isSearching)
+                  if (_isSearching)
+                    SliverToBoxAdapter(
+                      child: Padding(
+                        padding: const EdgeInsets.fromLTRB(20, 0, 20, 8),
+                        child: TextField(
+                          controller: _searchTextController,
+                          autofocus: true,
+                          decoration: InputDecoration(
+                            hintText: 'Search notes, tags, or content...',
+                            prefixIcon: const Icon(Icons.search, size: 20),
+                            suffixIcon: IconButton(
+                              icon: const Icon(Icons.close, size: 20),
+                              onPressed: () => setState(() {
+                                _isSearching = false;
+                                _searchTextController.clear();
+                                _onSearch('');
+                              }),
+                            ),
+                            contentPadding: const EdgeInsets.symmetric(vertical: 10),
+                            isDense: true,
+                            border: OutlineInputBorder(borderRadius: BorderRadius.circular(24)),
+                          ),
+                          onChanged: _onSearch,
                         ),
                       ),
                     ),
-                  ),
 
                   // Category chips
                   SliverToBoxAdapter(
-                    child: _buildAnimatedItem(
-                      3,
-                      _buildCategoryChips(context),
-                    ),
+                    child: _buildAnimatedItem(1, _buildCategoryChips(context)),
                   ),
 
                   // Recent notes header
@@ -255,7 +263,6 @@ class _DashboardScreenState extends ConsumerState<DashboardScreen>
 
   Widget _buildHeader(BuildContext context) {
     final theme = Theme.of(context);
-
     return Padding(
       padding: const EdgeInsets.fromLTRB(20, 16, 20, 16),
       child: Row(
@@ -266,9 +273,7 @@ class _DashboardScreenState extends ConsumerState<DashboardScreen>
             children: [
               Text(
                 'Organote',
-                style: theme.textTheme.headlineSmall?.copyWith(
-                  fontWeight: FontWeight.bold,
-                ),
+                style: theme.textTheme.headlineSmall?.copyWith(fontWeight: FontWeight.bold),
               ),
               const SizedBox(height: 2),
               Text(
@@ -279,21 +284,22 @@ class _DashboardScreenState extends ConsumerState<DashboardScreen>
               ),
             ],
           ),
-          GestureDetector(
-            onTap: () => context.push('/settings'),
-            child: Container(
-              width: 40,
-              height: 40,
-              decoration: BoxDecoration(
-                color: AppTheme.primaryColor,
-                borderRadius: BorderRadius.circular(20),
-                boxShadow: AppShadows.soft,
+          // Search icon (replaces avatar)
+          IconButton(
+            onPressed: () => setState(() => _isSearching = !_isSearching),
+            tooltip: 'Search',
+            icon: AnimatedSwitcher(
+              duration: const Duration(milliseconds: 200),
+              child: Icon(
+                _isSearching ? Icons.close : Icons.search,
+                key: ValueKey(_isSearching),
+                color: theme.colorScheme.onSurface,
+                size: 24,
               ),
-              child: const Icon(
-                Icons.person,
-                color: Colors.white,
-                size: 20,
-              ),
+            ),
+            style: IconButton.styleFrom(
+              backgroundColor: theme.colorScheme.surfaceContainerHighest,
+              shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
             ),
           ),
         ],
@@ -301,161 +307,6 @@ class _DashboardScreenState extends ConsumerState<DashboardScreen>
     );
   }
 
-  Widget _buildComplianceStatus(BuildContext context) {
-    final theme = Theme.of(context);
-    final compliance = _compliance;
-    final isHealthy = compliance?.isHealthy ?? true;
-
-    return Padding(
-      padding: const EdgeInsets.fromLTRB(20, 0, 20, 16),
-      child: GestureDetector(
-        onTap: isHealthy ? null : () => _showComplianceDetails(context),
-        child: Container(
-          padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 10),
-          decoration: BoxDecoration(
-            color: theme.colorScheme.surface,
-            borderRadius: BorderRadius.circular(12),
-            border: Border.all(
-              color: isHealthy 
-                  ? theme.colorScheme.outline.withValues(alpha: 0.1)
-                  : Colors.orange.withValues(alpha: 0.3),
-            ),
-            boxShadow: AppShadows.soft,
-          ),
-          child: Row(
-            children: [
-              Icon(
-                isHealthy ? Icons.check_circle : Icons.warning_amber_rounded,
-                color: isHealthy ? Colors.green.shade500 : Colors.orange.shade600,
-                size: 20,
-              ),
-              const SizedBox(width: 8),
-              Expanded(
-                child: Text(
-                  compliance?.statusText ?? 'Checking compliance...',
-                  style: theme.textTheme.bodySmall?.copyWith(
-                    fontWeight: FontWeight.w500,
-                    color: isHealthy ? null : Colors.orange.shade800,
-                  ),
-                ),
-              ),
-              if (!isHealthy)
-                Icon(
-                  Icons.arrow_forward_ios,
-                  size: 14,
-                  color: Colors.orange.shade600,
-                ),
-            ],
-          ),
-        ),
-      ),
-    );
-  }
-
-  void _showComplianceDetails(BuildContext context) {
-    final theme = Theme.of(context);
-    final compliance = _compliance;
-    if (compliance == null) return;
-
-    showModalBottomSheet(
-      context: context,
-      isScrollControlled: true,
-      backgroundColor: theme.colorScheme.surface,
-      shape: const RoundedRectangleBorder(
-        borderRadius: BorderRadius.vertical(top: Radius.circular(20)),
-      ),
-      builder: (context) => DraggableScrollableSheet(
-        initialChildSize: 0.5,
-        minChildSize: 0.3,
-        maxChildSize: 0.9,
-        expand: false,
-        builder: (context, scrollController) => Column(
-          children: [
-            Container(
-              width: 40,
-              height: 4,
-              margin: const EdgeInsets.only(top: 12),
-              decoration: BoxDecoration(
-                color: theme.colorScheme.onSurface.withValues(alpha: 0.2),
-                borderRadius: BorderRadius.circular(2),
-              ),
-            ),
-            Padding(
-              padding: const EdgeInsets.all(20),
-              child: Row(
-                children: [
-                  Icon(
-                    Icons.warning_amber_rounded,
-                    color: Colors.orange.shade600,
-                  ),
-                  const SizedBox(width: 8),
-                  Text(
-                    'Compliance Issues',
-                    style: theme.textTheme.titleMedium?.copyWith(
-                      fontWeight: FontWeight.bold,
-                    ),
-                  ),
-                ],
-              ),
-            ),
-            Expanded(
-              child: ListView.builder(
-                controller: scrollController,
-                padding: const EdgeInsets.symmetric(horizontal: 20),
-                itemCount: compliance.issues.length,
-                itemBuilder: (context, index) {
-                  final issue = compliance.issues[index];
-                  return Container(
-                    margin: const EdgeInsets.only(bottom: 12),
-                    padding: const EdgeInsets.all(12),
-                    decoration: BoxDecoration(
-                      color: Colors.orange.withValues(alpha: 0.1),
-                      borderRadius: BorderRadius.circular(8),
-                      border: Border.all(
-                        color: Colors.orange.withValues(alpha: 0.2),
-                      ),
-                    ),
-                    child: Column(
-                      crossAxisAlignment: CrossAxisAlignment.start,
-                      children: [
-                        Text(
-                          issue.note.getDisplayTitle(),
-                          style: theme.textTheme.titleSmall?.copyWith(
-                            fontWeight: FontWeight.w600,
-                          ),
-                        ),
-                        const SizedBox(height: 4),
-                        Text(
-                          issue.summary,
-                          style: theme.textTheme.bodySmall?.copyWith(
-                            color: Colors.orange.shade800,
-                          ),
-                        ),
-                        const SizedBox(height: 8),
-                        TextButton.icon(
-                          onPressed: () {
-                            Navigator.pop(context);
-                            _openNote(issue.note);
-                          },
-                          icon: const Icon(Icons.edit, size: 16),
-                          label: const Text('Edit Note'),
-                          style: TextButton.styleFrom(
-                            padding: EdgeInsets.zero,
-                            minimumSize: Size.zero,
-                            tapTargetSize: MaterialTapTargetSize.shrinkWrap,
-                          ),
-                        ),
-                      ],
-                    ),
-                  );
-                },
-              ),
-            ),
-          ],
-        ),
-      ),
-    );
-  }
 
   Widget _buildCategoryChips(BuildContext context) {
     final theme = Theme.of(context);

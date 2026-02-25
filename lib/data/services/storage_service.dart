@@ -166,4 +166,10 @@ class StorageService {
   Future<void> clearAll() async {
     await _prefs?.clear();
   }
+
+  /// Refresh caches from underlying storage (e.g., re-read files from disk).
+  /// No-op for SharedPreferences-based storage; overridden by FileSystemStorageService.
+  Future<void> refreshCaches() async {
+    // No-op — SharedPreferences is always in sync
+  }
 }

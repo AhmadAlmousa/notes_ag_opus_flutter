@@ -31,6 +31,8 @@ class _NoteViewScreenState extends ConsumerState<NoteViewScreen>
   Note? _note;
   Template? _template;
   bool _isLoading = true;
+  // Track which record indices are collapsed
+  final Set<int> _collapsedCards = {};
 
   @override
   void initState() {
@@ -430,21 +432,25 @@ class _NoteViewScreenState extends ConsumerState<NoteViewScreen>
               spacing: 6,
               runSpacing: 6,
               children: _note!.tags.map((tag) {
-                return Container(
-                  padding: const EdgeInsets.symmetric(
-                    horizontal: 8,
-                    vertical: 4,
+                return ActionChip(
+                  avatar: Icon(
+                    Icons.label_outline,
+                    size: 14,
+                    color: AppTheme.primaryColor,
                   ),
-                  decoration: BoxDecoration(
-                    color: theme.colorScheme.surfaceContainerHighest,
-                    borderRadius: BorderRadius.circular(12),
-                  ),
-                  child: Text(
+                  label: Text(
                     '#$tag',
-                    style: theme.textTheme.bodySmall?.copyWith(
+                    style: TextStyle(
                       fontSize: 11,
+                      color: AppTheme.primaryColor,
+                      fontWeight: FontWeight.w500,
                     ),
                   ),
+                  backgroundColor: AppTheme.primaryColor.withValues(alpha: 0.08),
+                  side: BorderSide(color: AppTheme.primaryColor.withValues(alpha: 0.2)),
+                  materialTapTargetSize: MaterialTapTargetSize.shrinkWrap,
+                  padding: const EdgeInsets.symmetric(horizontal: 4),
+                  onPressed: () => context.push('/notes?tag=${Uri.encodeComponent(tag)}'),
                 );
               }).toList(),
             ),
@@ -486,32 +492,56 @@ class _NoteViewScreenState extends ConsumerState<NoteViewScreen>
   }
 
   Widget _buildRecordsList(ThemeData theme) {
+    final allCollapsed = _note!.records.isNotEmpty &&
+        _collapsedCards.length == _note!.records.length;
     return Column(
-      children: List.generate(_note!.records.length, (index) {
-        final record = _note!.records[index];
-        final animation = CurvedAnimation(
-          parent: _animationController,
-          curve: Interval(
-            (0.2 + 0.1 * index).clamp(0.0, 1.0),
-            (0.5 + 0.1 * index).clamp(0.0, 1.0),
-            curve: Curves.easeOutCubic,
-          ),
-        );
-
-        return FadeTransition(
-          opacity: animation,
-          child: SlideTransition(
-            position: Tween<Offset>(
-              begin: const Offset(0, 0.1),
-              end: Offset.zero,
-            ).animate(animation),
-            child: Padding(
-              padding: const EdgeInsets.only(bottom: 16),
-              child: _buildRecordCard(theme, record, index),
+      children: [
+        // Collapse/expand-all toolbar
+        if (_note!.records.length > 1)
+          Padding(
+            padding: const EdgeInsets.only(bottom: 8),
+            child: Row(
+              mainAxisAlignment: MainAxisAlignment.end,
+              children: [
+                TextButton.icon(
+                  icon: Icon(allCollapsed ? Icons.unfold_more : Icons.unfold_less, size: 16),
+                  label: Text(allCollapsed ? 'Expand All' : 'Collapse All', style: const TextStyle(fontSize: 12)),
+                  onPressed: () => setState(() {
+                    if (allCollapsed) {
+                      _collapsedCards.clear();
+                    } else {
+                      _collapsedCards.addAll(List.generate(_note!.records.length, (i) => i));
+                    }
+                  }),
+                ),
+              ],
             ),
           ),
-        );
-      }),
+        ...List.generate(_note!.records.length, (index) {
+          final record = _note!.records[index];
+          final animation = CurvedAnimation(
+            parent: _animationController,
+            curve: Interval(
+              (0.2 + 0.1 * index).clamp(0.0, 1.0),
+              (0.5 + 0.1 * index).clamp(0.0, 1.0),
+              curve: Curves.easeOutCubic,
+            ),
+          );
+          return FadeTransition(
+            opacity: animation,
+            child: SlideTransition(
+              position: Tween<Offset>(
+                begin: const Offset(0, 0.1),
+                end: Offset.zero,
+              ).animate(animation),
+              child: Padding(
+                padding: const EdgeInsets.only(bottom: 16),
+                child: _buildRecordCard(theme, record, index),
+              ),
+            ),
+          );
+        }),
+      ],
     );
   }
 
@@ -562,6 +592,7 @@ class _NoteViewScreenState extends ConsumerState<NoteViewScreen>
     Map<String, dynamic> record,
     int index,
   ) {
+    final isCollapsed = _collapsedCards.contains(index);
     return Container(
       decoration: BoxDecoration(
         color: theme.colorScheme.surface,
@@ -574,71 +605,99 @@ class _NoteViewScreenState extends ConsumerState<NoteViewScreen>
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
-          // Header
-          Container(
-            padding: const EdgeInsets.all(16),
-            decoration: BoxDecoration(
-              color: AppTheme.primaryColor.withValues(alpha: 0.05),
-              borderRadius: const BorderRadius.vertical(
-                top: Radius.circular(12),
+          // Header — tappable to collapse/expand
+          GestureDetector(
+            onTap: () => setState(() {
+              if (isCollapsed) {
+                _collapsedCards.remove(index);
+              } else {
+                _collapsedCards.add(index);
+              }
+            }),
+            behavior: HitTestBehavior.opaque,
+            child: Container(
+              padding: const EdgeInsets.all(16),
+              decoration: BoxDecoration(
+                color: AppTheme.primaryColor.withValues(alpha: 0.05),
+                borderRadius: BorderRadius.vertical(
+                  top: const Radius.circular(12),
+                  bottom: isCollapsed ? const Radius.circular(12) : Radius.zero,
+                ),
               ),
-            ),
-            child: Row(
-              children: [
-                Container(
-                  width: 28,
-                  height: 28,
-                  decoration: BoxDecoration(
-                    color: AppTheme.primaryColor.withValues(alpha: 0.1),
-                    borderRadius: BorderRadius.circular(8),
-                  ),
-                  child: Center(
-                    child: Text(
-                      '${index + 1}',
-                      style: TextStyle(
-                        color: AppTheme.primaryColor,
-                        fontWeight: FontWeight.bold,
-                        fontSize: 12,
+              child: Row(
+                children: [
+                  Container(
+                    width: 28,
+                    height: 28,
+                    decoration: BoxDecoration(
+                      color: AppTheme.primaryColor.withValues(alpha: 0.1),
+                      borderRadius: BorderRadius.circular(8),
+                    ),
+                    child: Center(
+                      child: Text(
+                        '${index + 1}',
+                        style: TextStyle(
+                          color: AppTheme.primaryColor,
+                          fontWeight: FontWeight.bold,
+                          fontSize: 12,
+                        ),
                       ),
                     ),
                   ),
-                ),
-                const SizedBox(width: 10),
-                Expanded(
-                  child: Text(
-                    _getRecordTitle(record, index),
-                    style: theme.textTheme.titleSmall?.copyWith(
-                      fontWeight: FontWeight.w600,
+                  const SizedBox(width: 10),
+                  Expanded(
+                    child: Text(
+                      _getRecordTitle(record, index),
+                      style: theme.textTheme.titleSmall?.copyWith(
+                        fontWeight: FontWeight.w600,
+                      ),
+                      maxLines: 1,
+                      overflow: TextOverflow.ellipsis,
                     ),
-                    maxLines: 1,
-                    overflow: TextOverflow.ellipsis,
                   ),
-                ),
-                // Action buttons from template
-                if (_template?.actions.isNotEmpty == true)
-                  Row(
-                    mainAxisSize: MainAxisSize.min,
-                    children: _template!.actions.map((action) {
-                      final fieldValue = record[action.field]?.toString() ?? '';
-                      return Padding(
-                        padding: const EdgeInsets.only(left: 8),
-                        child: _ActionButton(
-                          action: action,
-                          value: fieldValue,
-                          onCopy: () => _copyToClipboard(fieldValue, action.label),
-                        ),
-                      );
-                    }).toList(),
+                  // Action buttons from template
+                  if (_template?.actions.isNotEmpty == true)
+                    Row(
+                      mainAxisSize: MainAxisSize.min,
+                      children: _template!.actions.map((action) {
+                        final fieldValue = record[action.field]?.toString() ?? '';
+                        return Padding(
+                          padding: const EdgeInsets.only(left: 8),
+                          child: _ActionButton(
+                            action: action,
+                            value: fieldValue,
+                            onCopy: () => _copyToClipboard(fieldValue, action.label),
+                          ),
+                        );
+                      }).toList(),
+                    ),
+                  // Collapse indicator
+                  AnimatedRotation(
+                    turns: isCollapsed ? -0.25 : 0,
+                    duration: const Duration(milliseconds: 200),
+                    child: Icon(
+                      Icons.keyboard_arrow_down,
+                      size: 20,
+                      color: theme.colorScheme.onSurfaceVariant,
+                    ),
                   ),
-              ],
+                ],
+              ),
             ),
           ),
-          // Fields
-          Padding(
-            padding: const EdgeInsets.all(16),
-            child: Column(
-              children: _buildFieldRows(theme, record),
+          // Fields — hidden when collapsed
+          AnimatedCrossFade(
+            duration: const Duration(milliseconds: 200),
+            crossFadeState: isCollapsed
+                ? CrossFadeState.showSecond
+                : CrossFadeState.showFirst,
+            firstChild: Padding(
+              padding: const EdgeInsets.all(16),
+              child: Column(
+                children: _buildFieldRows(theme, record),
+              ),
             ),
+            secondChild: const SizedBox.shrink(),
           ),
         ],
       ),

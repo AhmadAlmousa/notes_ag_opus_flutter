@@ -2,6 +2,7 @@ import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:go_router/go_router.dart';
 
+import '../../../core/note_migrator.dart';
 import '../../../core/providers.dart';
 import '../../../core/theme/app_theme.dart';
 import '../../../core/utils/sanitizers.dart';
@@ -140,7 +141,28 @@ class _TemplateBuilderScreenState extends ConsumerState<TemplateBuilderScreen> {
       version: _isNew ? 1 : _template.version + 1,
     );
 
+    // Migrate existing notes before saving the new template
+    if (!_isNew) {
+      final oldTemplate = ref.read(templateRepoProvider).getById(_idController.text);
+      final noteRepo = ref.read(noteRepoProvider);
+      final migratedCount = await NoteMigrator.migrateNotes(
+        oldTemplate: oldTemplate,
+        newTemplate: updatedTemplate,
+        noteRepo: noteRepo,
+      );
+      if (migratedCount > 0) {
+        debugPrint('Migrated $migratedCount notes for template ${updatedTemplate.templateId}');
+      }
+    }
+
     await ref.read(templateRepoProvider).save(updatedTemplate);
+
+    // Push template to cloud sync
+    final syncService = ref.read(syncServiceProvider);
+    syncService.pushDocument(
+      'templates/${updatedTemplate.templateId}',
+      updatedTemplate.toMarkdown(),
+    );
 
     if (mounted) {
       ScaffoldMessenger.of(context).showSnackBar(

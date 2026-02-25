@@ -375,6 +375,11 @@ class _NoteEditorScreenState extends ConsumerState<NoteEditorScreen> {
               // Category selector
               _buildCategorySelector(theme),
 
+              const SizedBox(height: 16),
+
+              // Tags editor
+              _buildTagsEditor(theme),
+
               const SizedBox(height: 20),
 
               // Records section header
@@ -528,6 +533,99 @@ class _NoteEditorScreenState extends ConsumerState<NoteEditorScreen> {
               ),
             );
           }).toList(),
+        ),
+      ],
+    );
+  }
+
+  Widget _buildTagsEditor(ThemeData theme) {
+    final tagController = TextEditingController();
+    // Gather all known tags from existing notes for autocomplete
+    final allTags = ref.read(noteRepoProvider)
+        .getAll()
+        .expand((n) => n.tags)
+        .toSet()
+        .difference(_tags.toSet())
+        .toList()..sort();
+
+    void addTag(String tag) {
+      final trimmed = tag.trim().toLowerCase();
+      if (trimmed.isNotEmpty && !_tags.contains(trimmed)) {
+        setState(() {
+          _tags.add(trimmed);
+          _markChanged();
+        });
+      }
+      tagController.clear();
+    }
+
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        Text('Tags', style: theme.textTheme.titleSmall?.copyWith(fontWeight: FontWeight.w600)),
+        const SizedBox(height: 8),
+        Wrap(
+          spacing: 6,
+          runSpacing: 6,
+          children: [
+            // Existing tags as removable chips
+            ..._tags.map((tag) => Chip(
+              label: Text(tag, style: const TextStyle(fontSize: 12)),
+              deleteIcon: const Icon(Icons.close, size: 14),
+              onDeleted: () => setState(() { _tags.remove(tag); _markChanged(); }),
+              materialTapTargetSize: MaterialTapTargetSize.shrinkWrap,
+              padding: const EdgeInsets.symmetric(horizontal: 4),
+            )),
+            // Input chip for adding new tags
+            SizedBox(
+              width: 150,
+              child: RawAutocomplete<String>(
+                textEditingController: tagController,
+                focusNode: FocusNode(),
+                optionsBuilder: (v) => allTags
+                    .where((t) => t.contains(v.text.toLowerCase().trim()) && v.text.isNotEmpty)
+                    .take(5),
+                onSelected: addTag,
+                fieldViewBuilder: (ctx, ctrl, fn, _) => TextField(
+                  controller: ctrl,
+                  focusNode: fn,
+                  decoration: InputDecoration(
+                    hintText: 'Add tag...',
+                    hintStyle: const TextStyle(fontSize: 12),
+                    isDense: true,
+                    contentPadding: const EdgeInsets.symmetric(horizontal: 8, vertical: 8),
+                    border: OutlineInputBorder(borderRadius: BorderRadius.circular(20)),
+                    suffixIcon: IconButton(
+                      icon: const Icon(Icons.add, size: 16),
+                      padding: EdgeInsets.zero,
+                      onPressed: () => addTag(ctrl.text),
+                    ),
+                  ),
+                  style: const TextStyle(fontSize: 12),
+                  onSubmitted: addTag,
+                ),
+                optionsViewBuilder: (ctx, onSel, opts) => Align(
+                  alignment: Alignment.topLeft,
+                  child: Material(
+                    elevation: 4,
+                    borderRadius: BorderRadius.circular(8),
+                    child: SizedBox(
+                      width: 160,
+                      child: ListView(
+                        padding: EdgeInsets.zero,
+                        shrinkWrap: true,
+                        children: opts.map((o) => ListTile(
+                          dense: true,
+                          title: Text(o, style: const TextStyle(fontSize: 12)),
+                          onTap: () => onSel(o),
+                        )).toList(),
+                      ),
+                    ),
+                  ),
+                ),
+              ),
+            ),
+          ],
         ),
       ],
     );
