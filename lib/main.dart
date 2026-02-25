@@ -73,53 +73,24 @@ class OrganoteApp extends ConsumerWidget {
   }
 }
 
-/// Splash screen shown during initialization with progress steps.
-class _SplashScreen extends StatefulWidget {
+/// Splash screen shown during initialization with real progress steps.
+class _SplashScreen extends ConsumerWidget {
   const _SplashScreen();
 
-  @override
-  State<_SplashScreen> createState() => _SplashScreenState();
-}
-
-class _SplashScreenState extends State<_SplashScreen>
-    with SingleTickerProviderStateMixin {
-  late AnimationController _iconAnimController;
-  int _currentStep = 0;
-
-  static const _steps = [
+  static const _stepOrder = [
+    'Starting...',
     'Connecting storage...',
     'Loading templates...',
-    'Building search index...',
-    'Starting sync...',
+    'Seeding sample data...',
+    'Applying preferences...',
   ];
 
   @override
-  void initState() {
-    super.initState();
-    _iconAnimController = AnimationController(
-      vsync: this,
-      duration: const Duration(milliseconds: 800),
-    )..forward();
-    _advanceSteps();
-  }
-
-  void _advanceSteps() async {
-    for (int i = 0; i < _steps.length; i++) {
-      await Future.delayed(const Duration(milliseconds: 600));
-      if (mounted) setState(() => _currentStep = i);
-    }
-  }
-
-  @override
-  void dispose() {
-    _iconAnimController.dispose();
-    super.dispose();
-  }
-
-  @override
-  Widget build(BuildContext context) {
+  Widget build(BuildContext context, WidgetRef ref) {
     final theme = Theme.of(context);
-    final progress = (_currentStep + 1) / _steps.length;
+    final currentStep = ref.watch(initProgressProvider);
+    final stepIndex = _stepOrder.indexOf(currentStep).clamp(0, _stepOrder.length - 1);
+    final progress = (stepIndex + 1) / _stepOrder.length;
 
     return Scaffold(
       body: Center(
@@ -187,8 +158,8 @@ class _SplashScreenState extends State<_SplashScreen>
                   AnimatedSwitcher(
                     duration: const Duration(milliseconds: 300),
                     child: Text(
-                      _steps[_currentStep],
-                      key: ValueKey(_currentStep),
+                      currentStep,
+                      key: ValueKey(currentStep),
                       style: theme.textTheme.bodySmall?.copyWith(
                         color: theme.colorScheme.onSurfaceVariant,
                       ),
@@ -203,4 +174,3 @@ class _SplashScreenState extends State<_SplashScreen>
     );
   }
 }
-

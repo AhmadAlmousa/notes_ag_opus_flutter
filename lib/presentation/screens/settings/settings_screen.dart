@@ -172,7 +172,7 @@ class _SettingsScreenState extends ConsumerState<SettingsScreen>
                         _buildInfoTile(
                           context,
                           'Version',
-                          '1.0.0',
+                          '1.2.0',
                           Icons.tag,
                         ),
                         _buildInfoTile(
@@ -473,7 +473,7 @@ class _SettingsScreenState extends ConsumerState<SettingsScreen>
     final theme = Theme.of(context);
     final storage = ref.read(storageProvider);
     final isConnected = ref.watch(syncStatusProvider);
-    final useEnv = storage.getSetting<bool>('sync_use_env') ?? false;
+    final syncService = ref.read(syncServiceProvider);
 
     return Padding(
       padding: const EdgeInsets.fromLTRB(16, 0, 16, 16),
@@ -492,129 +492,120 @@ class _SettingsScreenState extends ConsumerState<SettingsScreen>
                 ),
               ),
               const SizedBox(width: 8),
-              Text(
-                isConnected ? 'Connected' : 'Disconnected',
-                style: theme.textTheme.bodyMedium?.copyWith(
-                  color: isConnected ? Colors.green : Colors.red.shade400,
-                  fontWeight: FontWeight.w600,
+              Expanded(
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    Text(
+                      isConnected ? 'Connected' : 'Disconnected',
+                      style: theme.textTheme.bodyMedium?.copyWith(
+                        color: isConnected ? Colors.green : Colors.red.shade400,
+                        fontWeight: FontWeight.w600,
+                      ),
+                    ),
+                    if (isConnected && syncService.accountEmail != null)
+                      Text(
+                        syncService.accountEmail!,
+                        style: theme.textTheme.bodySmall?.copyWith(
+                          color: theme.colorScheme.onSurfaceVariant,
+                        ),
+                      ),
+                  ],
                 ),
               ),
             ],
           ),
-          const SizedBox(height: 16),
+          const SizedBox(height: 12),
 
-          // Use env variables checkbox
-          CheckboxListTile(
-            contentPadding: EdgeInsets.zero,
-            title: const Text('Use environment variables'),
-            subtitle: const Text(
-              'Read SUPABASE_URL and SUPABASE_ANON_KEY from --dart-define',
+          // Description
+          Text(
+            'Sync your notes and templates across devices using your Google Drive account. '
+            'Files are stored in an "Organote" folder.',
+            style: theme.textTheme.bodySmall?.copyWith(
+              color: theme.colorScheme.onSurfaceVariant,
             ),
-            value: useEnv,
-            onChanged: (value) async {
-              await storage.setSetting('sync_use_env', value ?? false);
-              setState(() {});
-            },
           ),
-
-          if (!useEnv) ...[
-            const SizedBox(height: 8),
-            // Supabase URL
-            TextField(
-              decoration: InputDecoration(
-                labelText: 'Supabase URL',
-                hintText: 'https://your-project.supabase.co',
-                border: const OutlineInputBorder(),
-                prefixIcon: const Icon(Icons.link),
-                isDense: true,
-                filled: true,
-                fillColor: theme.colorScheme.surfaceContainerHighest
-                    .withValues(alpha: 0.3),
-              ),
-              controller: TextEditingController(
-                text: storage.getSetting<String>('sync_supabase_url') ?? '',
-              ),
-              onChanged: (value) {
-                storage.setSetting('sync_supabase_url', value.trim());
-              },
-            ),
-            const SizedBox(height: 12),
-            // Anon key
-            TextField(
-              decoration: InputDecoration(
-                labelText: 'Supabase Anon Key',
-                hintText: 'eyJhbGciOi...',
-                border: const OutlineInputBorder(),
-                prefixIcon: const Icon(Icons.key),
-                isDense: true,
-                filled: true,
-                fillColor: theme.colorScheme.surfaceContainerHighest
-                    .withValues(alpha: 0.3),
-              ),
-              controller: TextEditingController(
-                text: storage.getSetting<String>('sync_supabase_key') ?? '',
-              ),
-              obscureText: true,
-              onChanged: (value) {
-                storage.setSetting('sync_supabase_key', value.trim());
-              },
-            ),
-          ],
-
           const SizedBox(height: 16),
 
           // Action buttons
-          Row(
-            children: [
-              Expanded(
-                child: OutlinedButton.icon(
-                  onPressed: () async {
-                    if (isConnected) {
-                      ref.read(syncServiceProvider).disconnect();
+          if (!isConnected) ...[
+            SizedBox(
+              width: double.infinity,
+              child: ElevatedButton.icon(
+                onPressed: () async {
+                  final success = await syncService.signIn(storage: storage);
+                  if (success) {
+                    // Wire up remote change callback
+                    syncService.onRemoteChange = () {
+                      try {
+                        ref.read(noteRepoProvider).clearCache();
+                        ref.read(templateRepoProvider).clearCache();
+                      } catch (_) {}
+                      ref.read(syncTriggerProvider.notifier).trigger();
+                    };
+                    await syncService.pullAll();
+                    ref.read(syncStatusProvider.notifier).setConnected(true);
+                  }
+                  if (context.mounted) {
+                    ScaffoldMessenger.of(context).showSnackBar(
+                      SnackBar(
+                        content: Text(success
+                            ? 'Connected to Google Drive!'
+                            : 'Sign-in cancelled or failed.'),
+                        backgroundColor: success ? Colors.green : Colors.red,
+                      ),
+                    );
+                  }
+                  setState(() {});
+                },
+                icon: const Icon(Icons.login),
+                label: const Text('Sign in with Google'),
+                style: ElevatedButton.styleFrom(
+                  padding: const EdgeInsets.symmetric(vertical: 12),
+                ),
+              ),
+            ),
+          ] else ...[
+            Row(
+              children: [
+                Expanded(
+                  child: OutlinedButton.icon(
+                    onPressed: () async {
+                      await syncService.signOut();
                       ref.read(syncStatusProvider.notifier).setConnected(false);
-                    } else {
-                      final success = await initSync(ref);
+                      setState(() {});
+                    },
+                    icon: const Icon(Icons.logout),
+                    label: const Text('Sign Out'),
+                  ),
+                ),
+                const SizedBox(width: 12),
+                Expanded(
+                  child: ElevatedButton.icon(
+                    onPressed: () async {
+                      await syncService.syncAll();
                       if (context.mounted) {
+                        // Refresh caches after sync
+                        try {
+                          ref.read(noteRepoProvider).clearCache();
+                          ref.read(templateRepoProvider).clearCache();
+                        } catch (_) {}
+                        ref.read(syncTriggerProvider.notifier).trigger();
                         ScaffoldMessenger.of(context).showSnackBar(
-                          SnackBar(
-                            content: Text(success
-                                ? 'Connected to Supabase!'
-                                : 'Failed to connect. Check credentials.'),
-                            backgroundColor:
-                                success ? Colors.green : Colors.red,
+                          const SnackBar(
+                            content: Text('Sync complete!'),
+                            backgroundColor: Colors.green,
                           ),
                         );
                       }
-                    }
-                    setState(() {});
-                  },
-                  icon: Icon(
-                      isConnected ? Icons.cloud_off : Icons.cloud_outlined),
-                  label: Text(isConnected ? 'Disconnect' : 'Connect'),
+                    },
+                    icon: const Icon(Icons.sync),
+                    label: const Text('Sync Now'),
+                  ),
                 ),
-              ),
-              const SizedBox(width: 12),
-              Expanded(
-                child: ElevatedButton.icon(
-                  onPressed: isConnected
-                      ? () async {
-                          await ref.read(syncServiceProvider).pushAll();
-                          if (context.mounted) {
-                            ScaffoldMessenger.of(context).showSnackBar(
-                              const SnackBar(
-                                content: Text('All data synced!'),
-                                backgroundColor: Colors.green,
-                              ),
-                            );
-                          }
-                        }
-                      : null,
-                  icon: const Icon(Icons.sync),
-                  label: const Text('Sync Now'),
-                ),
-              ),
-            ],
-          ),
+              ],
+            ),
+          ],
         ],
       ),
     );

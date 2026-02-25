@@ -52,7 +52,7 @@ class FileSystemStorageService extends StorageService {
     if (type == null) return false;
 
     try {
-      if (type == 'fsa') {
+      if (type == 'fsa' || type == 'local') {
         final name = await FileSystemInterop.reconnect();
         if (name != null) {
           await FileSystemInterop.initDirectories();

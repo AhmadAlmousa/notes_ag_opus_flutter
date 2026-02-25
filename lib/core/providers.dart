@@ -30,8 +30,23 @@ class AppInit {
 // Initialization
 // ---------------------------------------------------------------------------
 
+/// Current init step text — watched by splash screen.
+class InitProgressNotifier extends Notifier<String> {
+  @override
+  String build() => 'Starting...';
+
+  void setStep(String step) => state = step;
+}
+
+final initProgressProvider = NotifierProvider<InitProgressNotifier, String>(
+  InitProgressNotifier.new,
+);
+
 /// Performs first-run initialization (reconnect storage, load prefs, seed data).
 final appInitProvider = FutureProvider<AppInit>((ref) async {
+  void setProgress(String step) => ref.read(initProgressProvider.notifier).setStep(step);
+
+  setProgress('Connecting storage...');
   StorageService storage;
   bool storageConfigured = false;
 
@@ -56,14 +71,17 @@ final appInitProvider = FutureProvider<AppInit>((ref) async {
     }
   }
 
+  setProgress('Loading templates...');
   final templateRepo = TemplateRepository(storage);
   final noteRepo = NoteRepository(storage);
 
   // Seed sample data if empty
   if (templateRepo.getAll().isEmpty) {
+    setProgress('Seeding sample data...');
     await _seedSampleData(storage, templateRepo, noteRepo);
   }
 
+  setProgress('Applying preferences...');
   // Load theme preference
   final themePref = storage.getSetting<String>('themeMode');
   final themeMode = themePref != null
@@ -192,59 +210,32 @@ class SyncStatusNotifier extends Notifier<bool> {
   void setConnected(bool value) => state = value;
 }
 
-/// Initialize Supabase sync from saved credentials.
-/// Returns true if sync was started successfully.
+/// Try to reconnect Google Drive sync from a previous session.
+/// Returns true if sync was reconnected successfully.
 Future<bool> initSync(WidgetRef ref) async {
   final storage = ref.read(storageProvider);
-  final useEnv = storage.getSetting<bool>('sync_use_env') ?? false;
-
-  String? url;
-  String? key;
-
-  if (useEnv) {
-    // Read from compile-time env (--dart-define)
-    url = const String.fromEnvironment('SUPABASE_URL');
-    key = const String.fromEnvironment('SUPABASE_ANON_KEY');
-    if (url.isEmpty) url = null;
-    if (key != null && key.isEmpty) key = null;
-  } else {
-    url = storage.getSetting<String>('sync_supabase_url');
-    key = storage.getSetting<String>('sync_supabase_key');
-  }
-
-  if (url == null || key == null || url.isEmpty || key.isEmpty) {
-    return false;
-  }
 
   try {
     final syncService = ref.read(syncServiceProvider);
-    await syncService.init(
-      supabaseUrl: url,
-      supabaseAnonKey: key,
-      storage: storage,
-    );
+    final reconnected = await syncService.tryReconnect(storage: storage);
+    if (!reconnected) return false;
 
     // Wire up remote change callback
     syncService.onRemoteChange = () {
-      // Clear repo caches so fresh data is loaded
       try {
         ref.read(noteRepoProvider).clearCache();
         ref.read(templateRepoProvider).clearCache();
       } catch (_) {}
-      // Trigger UI rebuild
       ref.read(syncTriggerProvider.notifier).trigger();
     };
 
-    // Initial sync: pull remote data
+    // Pull remote data
     await syncService.pullAll();
-
-    // Connect to Realtime
-    await syncService.connect();
 
     ref.read(syncStatusProvider.notifier).setConnected(true);
     return true;
   } catch (e) {
-    debugPrint('Sync init failed: $e');
+    debugPrint('Google Drive sync init failed: $e');
     return false;
   }
 }
@@ -258,12 +249,11 @@ Future<void> completeStorageSetup(WidgetRef ref, String storageType) async {
   await FileSystemStorageService.setConfigured(storageType);
 
   StorageService storage;
-  if (storageType == 'fsa' || storageType == 'opfs') {
+  if (storageType == 'fsa' || storageType == 'opfs' || storageType == 'local') {
     final fsStorage = await FileSystemStorageService.getInstance();
     await fsStorage.refreshCaches();
     storage = fsStorage;
   } else {
-    await FileSystemStorageService.setConfigured('local');
     storage = await StorageService.getInstance();
   }
 

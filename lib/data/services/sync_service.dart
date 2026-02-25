@@ -1,241 +1,336 @@
 import 'dart:async';
-import 'dart:math';
+import 'dart:convert';
 
-import 'package:supabase_flutter/supabase_flutter.dart';
+import 'package:flutter/foundation.dart';
+import 'package:google_sign_in/google_sign_in.dart';
+import 'package:googleapis/drive/v3.dart' as drive;
+import 'package:extension_google_sign_in_as_googleapis_auth/extension_google_sign_in_as_googleapis_auth.dart';
 
 import 'storage_service.dart';
-import '../../core/utils/markdown_parser.dart';
 
 /// Callback type for notifying the UI about remote changes.
 typedef OnRemoteChange = void Function();
 
-/// Sync service that pushes local changes to Supabase and listens
-/// for remote changes via Realtime WebSockets.
+/// Google Drive sync service.
 ///
-/// Conflict resolution: Last Write Wins (based on `updated_at`).
+/// Stores notes and templates as .md files inside an "Organote" folder
+/// in the user's Google Drive.  Conflict resolution: last-write-wins
+/// based on file `modifiedTime`.
 class SyncService {
   SyncService._();
 
   static SyncService? _instance;
   static SyncService get instance => _instance ??= SyncService._();
 
-  SupabaseClient? _client;
-  RealtimeChannel? _channel;
+  final GoogleSignIn _googleSignIn = GoogleSignIn(
+    scopes: [drive.DriveApi.driveFileScope],
+  );
+
+  drive.DriveApi? _driveApi;
   StorageService? _storage;
-  String _deviceId = '';
-  bool _initialized = false;
+  String? _rootFolderId; // "Organote" folder ID
   bool _connected = false;
 
   /// Callback invoked when a remote change is received and applied locally.
   OnRemoteChange? onRemoteChange;
 
-  /// Whether the sync service is currently connected to Supabase.
+  /// Whether the service is connected (signed in with a valid Drive client).
   bool get isConnected => _connected;
 
-  /// Whether the sync service has been initialized.
-  bool get isInitialized => _initialized;
+  /// Currently signed-in account email.
+  String? get accountEmail => _googleSignIn.currentUser?.email;
 
-  /// The device ID used for this session.
-  String get deviceId => _deviceId;
+  // ── Authentication ──────────────────────────────────────────────────
 
-  /// Initialize the Supabase client and generate a device ID.
-  Future<void> init({
-    required String supabaseUrl,
-    required String supabaseAnonKey,
-    required StorageService storage,
-  }) async {
-    if (_initialized) return;
-
+  /// Sign in to Google and initialize Drive API.
+  Future<bool> signIn({required StorageService storage}) async {
     _storage = storage;
-    _deviceId = _generateDeviceId();
+    try {
+      final account = await _googleSignIn.signIn();
+      if (account == null) return false; // user cancelled
 
-    await Supabase.initialize(
-      url: supabaseUrl,
-      anonKey: supabaseAnonKey,
-    );
+      final httpClient = await _googleSignIn.authenticatedClient();
+      if (httpClient == null) return false;
 
-    _client = Supabase.instance.client;
-    _initialized = true;
+      _driveApi = drive.DriveApi(httpClient);
+      _rootFolderId = await _getOrCreateFolder('Organote');
+      _connected = true;
+      return true;
+    } catch (e) {
+      debugPrint('Google Sign-In failed: $e');
+      return false;
+    }
   }
 
-  /// Connect and start listening for remote changes.
-  Future<void> connect() async {
-    if (!_initialized || _client == null) return;
-    if (_connected) return;
+  /// Try to silently reconnect (e.g., on app restart).
+  Future<bool> tryReconnect({required StorageService storage}) async {
+    _storage = storage;
+    try {
+      final account = await _googleSignIn.signInSilently();
+      if (account == null) return false;
 
-    // Subscribe to Realtime changes on the documents table
-    _channel = _client!.channel('documents-sync');
-    _channel!
-        .onPostgresChanges(
-          event: PostgresChangeEvent.all,
-          schema: 'public',
-          table: 'documents',
-          callback: _onPostgresChange,
-        )
-        .subscribe((status, [error]) {
-      _connected = status == RealtimeSubscribeStatus.subscribed;
-    });
+      final httpClient = await _googleSignIn.authenticatedClient();
+      if (httpClient == null) return false;
+
+      _driveApi = drive.DriveApi(httpClient);
+      _rootFolderId = await _getOrCreateFolder('Organote');
+      _connected = true;
+      return true;
+    } catch (_) {
+      return false;
+    }
   }
 
-  /// Disconnect from Realtime.
-  void disconnect() {
-    _channel?.unsubscribe();
-    _channel = null;
+  /// Sign out and disconnect.
+  Future<void> signOut() async {
+    await _googleSignIn.signOut();
+    _driveApi = null;
+    _rootFolderId = null;
     _connected = false;
   }
 
-  /// Full sync: pull all remote docs and overwrite local.
-  Future<void> pullAll() async {
-    if (_client == null || _storage == null) return;
+  // ── Push operations ─────────────────────────────────────────────────
 
+  /// Push a single document to Google Drive.
+  /// [path] is e.g. "notes/personal/myfile.md" or "templates/family_login.md".
+  Future<void> pushDocument(String path, String content) async {
+    if (_driveApi == null || _rootFolderId == null) return;
     try {
-      final response = await _client!
-          .from('documents')
-          .select()
-          .eq('deleted', false)
-          .order('updated_at', ascending: false);
+      final parentId = await _ensureFolderPath(path);
+      final fileName = path.split('/').last;
 
-      for (final row in response) {
-        final id = row['id'] as String;
-        final content = row['content'] as String;
+      final existing = await _findFile(fileName, parentId);
+      final media = drive.Media(
+        Stream.value(utf8.encode(content)),
+        utf8.encode(content).length,
+      );
 
-        _applyRemoteDocument(id, content);
+      if (existing != null) {
+        // Update existing file
+        await _driveApi!.files.update(
+          drive.File()..modifiedTime = DateTime.now().toUtc(),
+          existing.id!,
+          uploadMedia: media,
+        );
+      } else {
+        // Create new file
+        await _driveApi!.files.create(
+          drive.File()
+            ..name = fileName
+            ..parents = [parentId]
+            ..mimeType = 'text/markdown'
+            ..modifiedTime = DateTime.now().toUtc(),
+          uploadMedia: media,
+        );
       }
     } catch (e) {
-      // Silently fail — offline is fine
+      debugPrint('pushDocument error: $e');
     }
   }
 
-  /// Push a single document to Supabase.
-  Future<void> pushDocument(String id, String content) async {
-    if (_client == null) return;
-
+  /// Push a deletion to Google Drive.
+  Future<void> pushDeletion(String path) async {
+    if (_driveApi == null || _rootFolderId == null) return;
     try {
-      await _client!.from('documents').upsert({
-        'id': id,
-        'content': content,
-        'updated_at': DateTime.now().toUtc().toIso8601String(),
-        'device_id': _deviceId,
-        'deleted': false,
-      });
+      final parentId = await _ensureFolderPath(path);
+      final fileName = path.split('/').last;
+      final existing = await _findFile(fileName, parentId);
+      if (existing != null) {
+        await _driveApi!.files.delete(existing.id!);
+      }
     } catch (e) {
-      // Silently fail — will sync on next push
+      debugPrint('pushDeletion error: $e');
     }
   }
 
-  /// Push a deletion to Supabase (soft-delete).
-  Future<void> pushDeletion(String id) async {
-    if (_client == null) return;
-
-    try {
-      await _client!.from('documents').upsert({
-        'id': id,
-        'content': '',
-        'updated_at': DateTime.now().toUtc().toIso8601String(),
-        'device_id': _deviceId,
-        'deleted': true,
-      });
-    } catch (e) {
-      // Silently fail
-    }
-  }
-
-  /// Push all local notes and templates to Supabase (full upload).
+  /// Push all local notes and templates to Drive.
   Future<void> pushAll() async {
-    if (_client == null || _storage == null) return;
+    if (_driveApi == null || _storage == null) return;
+
+    // Push templates
+    final templates = _storage!.getTemplates();
+    for (final entry in templates.entries) {
+      await pushDocument('templates/${entry.key}.md', entry.value);
+    }
+
+    // Push notes
+    final notes = _storage!.getNotes();
+    for (final entry in notes.entries) {
+      final path = 'notes/${entry.key}';
+      final safePath = path.endsWith('.md') ? path : '$path.md';
+      await pushDocument(safePath, entry.value);
+    }
+  }
+
+  /// Pull all remote docs from Drive and overwrite local.
+  Future<void> pullAll() async {
+    if (_driveApi == null || _storage == null || _rootFolderId == null) return;
 
     try {
-      // Push notes
-      final notes = _storage!.getNotes();
-      for (final entry in notes.entries) {
-        await pushDocument('notes/${entry.key}', entry.value);
+      // Pull templates
+      final templatesFolderId = await _findFolder('templates', _rootFolderId!);
+      if (templatesFolderId != null) {
+        final templateFiles = await _listFiles(templatesFolderId);
+        for (final file in templateFiles) {
+          final content = await _downloadFile(file.id!);
+          if (content != null && file.name != null) {
+            final templateId = file.name!.replaceAll('.md', '');
+            await _storage!.saveTemplate(templateId, content);
+          }
+        }
       }
 
-      // Push templates
-      final templates = _storage!.getTemplates();
-      for (final entry in templates.entries) {
-        await pushDocument('templates/${entry.key}', entry.value);
+      // Pull notes (recursive — category folders)
+      final notesFolderId = await _findFolder('notes', _rootFolderId!);
+      if (notesFolderId != null) {
+        // List category folders
+        final categoryFolders = await _listFolders(notesFolderId);
+        for (final catFolder in categoryFolders) {
+          final category = catFolder.name ?? 'unknown';
+          final noteFiles = await _listFiles(catFolder.id!);
+          for (final file in noteFiles) {
+            final content = await _downloadFile(file.id!);
+            if (content != null && file.name != null) {
+              await _storage!.saveNote(category, file.name!, content);
+            }
+          }
+        }
       }
+
+      // Notify UI
+      onRemoteChange?.call();
     } catch (e) {
-      // Silently fail
+      debugPrint('pullAll error: $e');
     }
   }
 
-  /// Handle incoming Postgres change events.
-  void _onPostgresChange(PostgresChangePayload payload) {
-    if (_storage == null) return;
-
-    final newRecord = payload.newRecord;
-    if (newRecord.isEmpty) return;
-
-    final remoteDeviceId = newRecord['device_id'] as String? ?? '';
-
-    // Ignore changes from this device
-    if (remoteDeviceId == _deviceId) return;
-
-    final id = newRecord['id'] as String? ?? '';
-    final content = newRecord['content'] as String? ?? '';
-    final deleted = newRecord['deleted'] as bool? ?? false;
-
-    if (id.isEmpty) return;
-
-    if (deleted) {
-      _applyRemoteDeletion(id);
-    } else {
-      _applyRemoteDocument(id, content);
-    }
-
-    // Notify UI to refresh
-    onRemoteChange?.call();
+  /// Full bidirectional sync.
+  Future<void> syncAll() async {
+    await pushAll();
+    await pullAll();
   }
 
-  /// Apply a remote document to local storage.
-  void _applyRemoteDocument(String id, String content) {
-    if (_storage == null || content.isEmpty) return;
+  // ── Helpers ─────────────────────────────────────────────────────────
 
-    if (id.startsWith('notes/')) {
-      final path = id.substring('notes/'.length);
-      final parts = path.split('/');
-      if (parts.length >= 2) {
-        final category = parts[0];
-        final filename = parts.sublist(1).join('/');
-        _storage!.saveNote(category, filename, content);
+  /// Get or create the "Organote" root folder.
+  Future<String> _getOrCreateFolder(String name,
+      {String? parentId}) async {
+    final parent = parentId ?? 'root';
+    final q = "name = '$name' and mimeType = 'application/vnd.google-apps.folder'"
+        " and '$parent' in parents and trashed = false";
+    final result = await _driveApi!.files.list(
+      q: q,
+      spaces: 'drive',
+      $fields: 'files(id, name)',
+    );
+
+    if (result.files != null && result.files!.isNotEmpty) {
+      return result.files!.first.id!;
+    }
+
+    // Create folder
+    final folder = drive.File()
+      ..name = name
+      ..mimeType = 'application/vnd.google-apps.folder'
+      ..parents = [parent];
+    final created = await _driveApi!.files.create(folder);
+    return created.id!;
+  }
+
+  /// Find a sub-folder by name.
+  Future<String?> _findFolder(String name, String parentId) async {
+    final q = "name = '$name' and mimeType = 'application/vnd.google-apps.folder'"
+        " and '$parentId' in parents and trashed = false";
+    final result = await _driveApi!.files.list(
+      q: q,
+      spaces: 'drive',
+      $fields: 'files(id, name)',
+    );
+    if (result.files != null && result.files!.isNotEmpty) {
+      return result.files!.first.id!;
+    }
+    return null;
+  }
+
+  /// Find a file by name inside a folder.
+  Future<drive.File?> _findFile(String name, String parentId) async {
+    final q = "name = '$name' and '$parentId' in parents"
+        " and mimeType != 'application/vnd.google-apps.folder'"
+        " and trashed = false";
+    final result = await _driveApi!.files.list(
+      q: q,
+      spaces: 'drive',
+      $fields: 'files(id, name, modifiedTime)',
+    );
+    if (result.files != null && result.files!.isNotEmpty) {
+      return result.files!.first;
+    }
+    return null;
+  }
+
+  /// List all non-folder files in a folder.
+  Future<List<drive.File>> _listFiles(String parentId) async {
+    final q = "'$parentId' in parents"
+        " and mimeType != 'application/vnd.google-apps.folder'"
+        " and trashed = false";
+    final result = await _driveApi!.files.list(
+      q: q,
+      spaces: 'drive',
+      $fields: 'files(id, name, modifiedTime)',
+    );
+    return result.files ?? [];
+  }
+
+  /// List all sub-folders in a folder.
+  Future<List<drive.File>> _listFolders(String parentId) async {
+    final q = "'$parentId' in parents"
+        " and mimeType = 'application/vnd.google-apps.folder'"
+        " and trashed = false";
+    final result = await _driveApi!.files.list(
+      q: q,
+      spaces: 'drive',
+      $fields: 'files(id, name)',
+    );
+    return result.files ?? [];
+  }
+
+  /// Ensure all intermediate folders in a path exist (relative to Organote).
+  /// Returns the parent folder ID where the file should be placed.
+  Future<String> _ensureFolderPath(String path) async {
+    final parts = path.split('/');
+    if (parts.length <= 1) return _rootFolderId!;
+
+    // Remove the file name — keep only folder segments
+    final folders = parts.sublist(0, parts.length - 1);
+    String currentParent = _rootFolderId!;
+    for (final folder in folders) {
+      currentParent = await _getOrCreateFolder(folder, parentId: currentParent);
+    }
+    return currentParent;
+  }
+
+  /// Download a file's text content by ID.
+  Future<String?> _downloadFile(String fileId) async {
+    try {
+      final response = await _driveApi!.files.get(
+        fileId,
+        downloadOptions: drive.DownloadOptions.fullMedia,
+      ) as drive.Media;
+
+      final bytes = <int>[];
+      await for (final chunk in response.stream) {
+        bytes.addAll(chunk);
       }
-    } else if (id.startsWith('templates/')) {
-      final templateId = id.substring('templates/'.length);
-      _storage!.saveTemplate(templateId, content);
+      return utf8.decode(bytes);
+    } catch (e) {
+      debugPrint('downloadFile error: $e');
+      return null;
     }
-  }
-
-  /// Apply a remote deletion to local storage.
-  void _applyRemoteDeletion(String id) {
-    if (_storage == null) return;
-
-    if (id.startsWith('notes/')) {
-      final path = id.substring('notes/'.length);
-      final parts = path.split('/');
-      if (parts.length >= 2) {
-        final category = parts[0];
-        final filename = parts.sublist(1).join('/');
-        _storage!.deleteNote(category, filename);
-      }
-    } else if (id.startsWith('templates/')) {
-      final templateId = id.substring('templates/'.length);
-      _storage!.deleteTemplate(templateId);
-    }
-  }
-
-  /// Generate a short random device ID for this session.
-  String _generateDeviceId() {
-    final random = Random();
-    const chars = 'abcdefghijklmnopqrstuvwxyz0123456789';
-    return List.generate(12, (_) => chars[random.nextInt(chars.length)]).join();
   }
 
   /// Dispose and clean up.
   void dispose() {
-    disconnect();
+    signOut();
     _instance = null;
-    _initialized = false;
   }
 }
