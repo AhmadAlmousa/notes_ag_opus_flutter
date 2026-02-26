@@ -43,8 +43,12 @@ final initProgressProvider = NotifierProvider<InitProgressNotifier, String>(
 );
 
 /// Performs first-run initialization (reconnect storage, load prefs, seed data).
-final appInitProvider = FutureProvider<AppInit>((ref) async {
-  void setProgress(String step) => ref.read(initProgressProvider.notifier).setStep(step);
+final FutureProvider<AppInit> appInitProvider = FutureProvider<AppInit>((ref) async {
+  void setProgress(String step) {
+    Future.microtask(() {
+      ref.read(initProgressProvider.notifier).setStep(step);
+    });
+  }
 
   setProgress('Connecting storage...');
   StorageService storage;
@@ -54,7 +58,8 @@ final appInitProvider = FutureProvider<AppInit>((ref) async {
 
   if (reconnected) {
     final fsStorage = await FileSystemStorageService.getInstance();
-    await fsStorage.refreshCaches();
+    // Launch cache refresh in background — no await so splash finishes fast
+    Future.microtask(() => fsStorage.refreshCaches());
     storage = fsStorage;
     storageConfigured = true;
   } else {
@@ -177,6 +182,10 @@ final storageDirectoryNameProvider = Provider<String?>((ref) {
   return FileSystemInterop.directoryName;
 });
 
+final storageDirectoryPathProvider = Provider<String?>((ref) {
+  return FileSystemInterop.directoryPath;
+});
+
 // ---------------------------------------------------------------------------
 // Sync
 // ---------------------------------------------------------------------------
@@ -251,7 +260,8 @@ Future<void> completeStorageSetup(WidgetRef ref, String storageType) async {
   StorageService storage;
   if (storageType == 'fsa' || storageType == 'opfs' || storageType == 'local') {
     final fsStorage = await FileSystemStorageService.getInstance();
-    await fsStorage.refreshCaches();
+    // Launch cache refresh in background
+    Future.microtask(() => fsStorage.refreshCaches());
     storage = fsStorage;
   } else {
     storage = await StorageService.getInstance();

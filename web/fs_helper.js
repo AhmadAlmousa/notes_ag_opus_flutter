@@ -237,15 +237,19 @@
         // Get all templates as { "templateId": content }
         getAllTemplates: async function () {
             const templates = {};
+            const promises = [];
             try {
                 const dir = await this._getDir(['templates'], false);
                 for await (const [name, handle] of dir.entries()) {
                     if (handle.kind === 'file' && name.endsWith('.md')) {
-                        const file = await handle.getFile();
-                        const content = await file.text();
-                        templates[name.replace('.md', '')] = content;
+                        promises.push((async () => {
+                            const file = await handle.getFile();
+                            const content = await file.text();
+                            templates[name.replace('.md', '')] = content;
+                        })());
                     }
                 }
+                await Promise.all(promises);
             } catch (e) {
                 // templates dir doesn't exist yet
             }
@@ -253,15 +257,19 @@
         },
 
         _readAllInDir: async function (dirHandle, prefix, results) {
+            const promises = [];
             for await (const [name, handle] of dirHandle.entries()) {
                 const path = prefix ? prefix + '/' + name : name;
                 if (handle.kind === 'file') {
-                    const file = await handle.getFile();
-                    results[path] = await file.text();
+                    promises.push((async () => {
+                        const file = await handle.getFile();
+                        results[path] = await file.text();
+                    })());
                 } else {
-                    await this._readAllInDir(handle, path, results);
+                    promises.push(this._readAllInDir(handle, path, results));
                 }
             }
+            await Promise.all(promises);
         },
 
         // Initialize - ensure notes/ and templates/ directories exist

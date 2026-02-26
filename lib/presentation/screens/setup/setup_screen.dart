@@ -1,6 +1,7 @@
 import 'package:file_picker/file_picker.dart';
 import 'package:flutter/foundation.dart' show kIsWeb;
 import 'package:flutter/material.dart';
+import 'package:permission_handler/permission_handler.dart';
 
 import '../../../core/theme/app_theme.dart';
 import '../../../data/services/fs_interop.dart';
@@ -68,6 +69,12 @@ class _SetupScreenState extends State<SetupScreen>
     try {
       String? dirPath;
       if (!kIsWeb) {
+        // Request storage permissions first
+        if (await Permission.manageExternalStorage.isDenied || 
+            await Permission.storage.isDenied) {
+          await [Permission.manageExternalStorage, Permission.storage].request();
+        }
+        
         dirPath = await FilePicker.platform.getDirectoryPath(
           dialogTitle: 'Select folder to store your notes',
         );

@@ -1,10 +1,16 @@
 import 'package:flutter/material.dart';
+import 'package:flutter/foundation.dart' show kIsWeb;
 import 'package:flutter_riverpod/flutter_riverpod.dart';
+import 'package:file_picker/file_picker.dart';
+import 'package:permission_handler/permission_handler.dart';
 
 import '../../../core/compliance_checker.dart';
+import '../../../data/services/fs_interop.dart';
+import '../../../data/services/file_system_storage_service.dart';
 import '../../../core/providers.dart';
 import '../../../core/export_import_service.dart';
 import '../../../core/theme/app_theme.dart';
+import '../../widgets/dialogs/sync_conflict_dialog.dart';
 import '../../widgets/layout/app_scaffold.dart';
 
 /// Settings screen.
@@ -127,13 +133,15 @@ class _SettingsScreenState extends ConsumerState<SettingsScreen>
                           _getStorageLabel(ref.read(storageTypeProvider)),
                           Icons.dns_outlined,
                         ),
-                        if (ref.read(storageDirectoryNameProvider) != null)
+                        if (ref.read(storageDirectoryPathProvider) != null)
                           _buildInfoTile(
                             context,
                             'Directory',
-                            ref.read(storageDirectoryNameProvider)!,
+                            ref.read(storageDirectoryPathProvider)!,
                             Icons.folder_open,
                           ),
+                        if (!kIsWeb && ref.read(storageTypeProvider) == 'local')
+                          _buildChangeDirectoryButton(context),
                       ],
                     ),
 
@@ -417,6 +425,78 @@ class _SettingsScreenState extends ConsumerState<SettingsScreen>
     );
   }
 
+  Widget _buildChangeDirectoryButton(BuildContext context) {
+    return Padding(
+      padding: const EdgeInsets.fromLTRB(16, 0, 16, 16),
+      child: SizedBox(
+        width: double.infinity,
+        child: OutlinedButton.icon(
+          onPressed: () => _handleChangeDirectory(context),
+          icon: const Icon(Icons.drive_file_move_outline),
+          label: const Text('Change Directory'),
+        ),
+      ),
+    );
+  }
+
+  Future<void> _handleChangeDirectory(BuildContext context) async {
+    if (!kIsWeb) {
+      if (await Permission.manageExternalStorage.isDenied ||
+          await Permission.storage.isDenied) {
+        await [Permission.manageExternalStorage, Permission.storage].request();
+      }
+    }
+    
+    final dirPath = await FilePicker.platform.getDirectoryPath(
+      dialogTitle: 'Select new folder to move your notes',
+    );
+    if (dirPath == null) return;
+
+    if (!context.mounted) return;
+
+    showDialog(
+      context: context,
+      barrierDismissible: false,
+      builder: (context) => const AlertDialog(
+        content: Row(
+          children: [
+            CircularProgressIndicator(),
+            SizedBox(width: 16),
+            Text('Moving files...'),
+          ],
+        ),
+      ),
+    );
+
+    try {
+      await FileSystemInterop.changeDirectory(dirPath);
+      if (context.mounted) {
+        Navigator.pop(context); // close dialog
+        
+        // Refresh providers
+        await FileSystemStorageService.getInstance().then((s) => s.refreshCaches());
+        ref.invalidate(appInitProvider);
+        
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(
+            content: Text('Directory changed and files moved successfully.'),
+            backgroundColor: Colors.green,
+          ),
+        );
+      }
+    } catch (e) {
+      if (context.mounted) {
+        Navigator.pop(context); // close dialog
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(
+            content: Text('Failed to change directory: $e'),
+            backgroundColor: Colors.red,
+          ),
+        );
+      }
+    }
+  }
+
   Widget _buildImportExportButtons(BuildContext context) {
     return Padding(
       padding: const EdgeInsets.fromLTRB(16, 0, 16, 16),
@@ -535,6 +615,35 @@ class _SettingsScreenState extends ConsumerState<SettingsScreen>
                 onPressed: () async {
                   final success = await syncService.signIn(storage: storage);
                   if (success) {
+                    bool shouldSync = true;
+                    final templates = storage.getTemplates();
+                    final notes = storage.getNotes();
+
+                    if (templates.isNotEmpty || notes.isNotEmpty) {
+                      if (context.mounted) {
+                        final result = await showDialog<bool>(
+                          context: context,
+                          barrierDismissible: false,
+                          builder: (context) => SyncConflictDialog(storage: storage),
+                        );
+                        shouldSync = result == true;
+                      }
+                    }
+
+                    if (!shouldSync) {
+                      await syncService.signOut();
+                      if (context.mounted) {
+                        ScaffoldMessenger.of(context).showSnackBar(
+                          const SnackBar(
+                            content: Text('Sync cancelled.'),
+                            backgroundColor: Colors.orange,
+                          ),
+                        );
+                      }
+                      setState(() {});
+                      return;
+                    }
+
                     // Wire up remote change callback
                     syncService.onRemoteChange = () {
                       try {
@@ -543,7 +652,29 @@ class _SettingsScreenState extends ConsumerState<SettingsScreen>
                       } catch (_) {}
                       ref.read(syncTriggerProvider.notifier).trigger();
                     };
+                    
+                    if (context.mounted) {
+                      showDialog(
+                        context: context,
+                        barrierDismissible: false,
+                        builder: (context) => const AlertDialog(
+                          content: Row(
+                            children: [
+                              CircularProgressIndicator(),
+                              SizedBox(width: 16),
+                              Text('Syncing with Google Drive...'),
+                            ],
+                          ),
+                        ),
+                      );
+                    }
+                    
                     await syncService.pullAll();
+                    
+                    if (context.mounted) {
+                      Navigator.pop(context); // close dialog
+                    }
+                    
                     ref.read(syncStatusProvider.notifier).setConnected(true);
                   }
                   if (context.mounted) {

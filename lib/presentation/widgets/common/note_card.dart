@@ -173,48 +173,92 @@ class _NoteCardState extends State<NoteCard>
                     ),
                     const SizedBox(height: 4),
                     Row(
+                      crossAxisAlignment: CrossAxisAlignment.end,
                       children: [
-                        // Category badge
-                        Container(
-                          padding: const EdgeInsets.symmetric(
-                            horizontal: 6,
-                            vertical: 2,
-                          ),
-                          decoration: BoxDecoration(
-                            color: categoryColor.withValues(alpha: 0.1),
-                            borderRadius: BorderRadius.circular(4),
-                          ),
-                          child: Text(
-                            widget.note.category.toUpperCase(),
-                            style: TextStyle(
-                              color: categoryColor,
-                              fontSize: 10,
-                              fontWeight: FontWeight.w600,
-                            ),
+                        Expanded(
+                          child: Wrap(
+                            spacing: 6,
+                            runSpacing: 4,
+                            children: [
+                              // Category badge
+                              Container(
+                                padding: const EdgeInsets.symmetric(
+                                  horizontal: 6,
+                                  vertical: 2,
+                                ),
+                                decoration: BoxDecoration(
+                                  color: categoryColor.withValues(alpha: 0.1),
+                                  borderRadius: BorderRadius.circular(4),
+                                ),
+                                child: Row(
+                                  mainAxisSize: MainAxisSize.min,
+                                  children: [
+                                    Icon(Icons.folder_outlined, size: 10, color: categoryColor),
+                                    const SizedBox(width: 4),
+                                    Text(
+                                      widget.note.category.toUpperCase(),
+                                      style: TextStyle(
+                                        color: categoryColor,
+                                        fontSize: 10,
+                                        fontWeight: FontWeight.w600,
+                                      ),
+                                    ),
+                                  ],
+                                ),
+                              ),
+                              // Template type badge
+                              if (widget.templateName != null)
+                                Container(
+                                  padding: const EdgeInsets.symmetric(
+                                    horizontal: 6,
+                                    vertical: 2,
+                                  ),
+                                  decoration: BoxDecoration(
+                                    color: AppTheme.primaryColor.withValues(alpha: 0.1),
+                                    borderRadius: BorderRadius.circular(4),
+                                  ),
+                                  child: Row(
+                                    mainAxisSize: MainAxisSize.min,
+                                    children: [
+                                      Icon(Icons.extension_outlined, size: 10, color: AppTheme.primaryColor),
+                                      const SizedBox(width: 4),
+                                      Text(
+                                        widget.templateName!,
+                                        style: TextStyle(
+                                          color: AppTheme.primaryColor,
+                                          fontSize: 10,
+                                          fontWeight: FontWeight.w600,
+                                        ),
+                                      ),
+                                    ],
+                                  ),
+                                ),
+                            ],
                           ),
                         ),
-                        // Template type badge
-                        if (widget.templateName != null) ...[
-                          const SizedBox(width: 6),
-                          Container(
-                            padding: const EdgeInsets.symmetric(
-                              horizontal: 6,
-                              vertical: 2,
-                            ),
-                            decoration: BoxDecoration(
-                              color: AppTheme.primaryColor.withValues(alpha: 0.1),
-                              borderRadius: BorderRadius.circular(4),
-                            ),
-                            child: Text(
-                              widget.templateName!,
-                              style: TextStyle(
-                                color: AppTheme.primaryColor,
-                                fontSize: 10,
-                                fontWeight: FontWeight.w600,
+                        // Tags
+                        if (widget.note.tags.isNotEmpty)
+                          Row(
+                            mainAxisSize: MainAxisSize.min,
+                            children: widget.note.tags.take(3).map((tag) => Padding(
+                              padding: const EdgeInsets.only(left: 4),
+                              child: Container(
+                                padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 2),
+                                decoration: BoxDecoration(
+                                  color: theme.colorScheme.surfaceContainerHighest,
+                                  borderRadius: BorderRadius.circular(4),
+                                ),
+                                child: Text(
+                                  '#$tag',
+                                  style: TextStyle(
+                                    color: theme.colorScheme.onSurfaceVariant,
+                                    fontSize: 10,
+                                    fontWeight: FontWeight.w500,
+                                  ),
+                                ),
                               ),
-                            ),
+                            )).toList(),
                           ),
-                        ],
                       ],
                     ),
                   ],

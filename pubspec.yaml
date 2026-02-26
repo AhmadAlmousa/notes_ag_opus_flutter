@@ -44,12 +44,13 @@ dependencies:
   
   # Import/Export functionality
   archive: ^4.0.6
-  file_saver: ^0.2.14
+  file_saver: ^0.3.1
   file_picker: ^10.1.13
+  permission_handler: ^12.0.1
   flutter_riverpod: ^3.2.1
-  googleapis: ^14.0.0
-  google_sign_in: ^6.2.2
-  extension_google_sign_in_as_googleapis_auth: ^2.0.12
+  googleapis: ^16.0.0
+  google_sign_in: ^7.2.0
+  extension_google_sign_in_as_googleapis_auth: ^3.0.0
   path_provider: ^2.1.5
   path: ^1.9.1
 

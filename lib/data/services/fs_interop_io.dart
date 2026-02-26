@@ -29,12 +29,53 @@ class FileSystemInterop {
     return p.basename(_rootPath!);
   }
 
+  /// Get the current directory path.
+  static String? get directoryPath {
+    return _rootPath;
+  }
+
   /// Set the root directory from a picked path and save to prefs.
   static Future<String> setRootPath(String path) async {
     _rootPath = path;
     final prefs = await SharedPreferences.getInstance();
     await prefs.setString(_prefsKey, path);
     return p.basename(path);
+  }
+
+  /// Change directory and move files.
+  static Future<String> changeDirectory(String newPath) async {
+    if (_rootPath != null && _rootPath != newPath) {
+      final oldNotesDir = Directory(p.join(_rootPath!, 'notes'));
+      final oldTemplatesDir = Directory(p.join(_rootPath!, 'templates'));
+      
+      final newNotesDir = Directory(p.join(newPath, 'notes'));
+      final newTemplatesDir = Directory(p.join(newPath, 'templates'));
+      
+      Future<void> moveDir(Directory oldDir, Directory newDir) async {
+        if (oldDir.existsSync()) {
+          if (!newDir.existsSync()) {
+            await newDir.create(recursive: true);
+          }
+          await for (final entity in oldDir.list(recursive: true)) {
+            if (entity is File) {
+              final relative = p.relative(entity.path, from: oldDir.path);
+              final newFile = File(p.join(newDir.path, relative));
+              await newFile.parent.create(recursive: true);
+              await entity.copy(newFile.path);
+              await entity.delete(); // delete original after copy
+            }
+          }
+          try {
+             await oldDir.delete(recursive: true);
+          } catch (_) {}
+        }
+      }
+      
+      await moveDir(oldNotesDir, newNotesDir);
+      await moveDir(oldTemplatesDir, newTemplatesDir);
+    }
+    
+    return await setRootPath(newPath);
   }
 
   /// Pick a directory — on native, this is called from the setup screen

@@ -27,6 +27,9 @@ external String _getStorageType();
 @JS('organoteFS.getDirectoryName')
 external String? _getDirectoryName();
 
+@JS('organoteFS.getDirectoryName')
+external String? _getDirectoryPath();
+
 @JS('organoteFS.writeFile')
 external JSPromise _writeFile(String path, String content);
 
@@ -110,6 +113,15 @@ class FileSystemInterop {
     }
   }
 
+  /// Get the current directory path.
+  static String? get directoryPath {
+    try {
+      return _getDirectoryPath();
+    } catch (_) {
+      return null;
+    }
+  }
+
   /// Pick a directory using File System Access API.
   /// Returns the directory name on success.
   static Future<String> pickDirectory() async {
@@ -183,6 +195,11 @@ class FileSystemInterop {
     return path.split('/').last;
   }
 
+  /// Change directory - native only, no-op on web.
+  static Future<String> changeDirectory(String newPath) async {
+    return newPath.split('/').last;
+  }
+
   /// Disconnect from current storage.
   static Future<void> disconnect() async {
     await _disconnect().toDart;
@@ -191,16 +208,10 @@ class FileSystemInterop {
   /// Convert a JSObject to a Dart Map<String, String>.
   static Map<String, String> _jsObjectToMap(JSObject obj) {
     final map = <String, String>{};
-    final keys = _objectKeys(obj);
-    for (int i = 0; i < keys.length; i++) {
-      final key = keys[i].toDart;
-      // Access property using JS interop
-      final value = (obj as JSAny).dartify();
-      if (value is Map) {
-        for (final entry in value.entries) {
-          map[entry.key.toString()] = entry.value.toString();
-        }
-        return map;
+    final value = (obj as JSAny).dartify();
+    if (value is Map) {
+      for (final entry in value.entries) {
+        map[entry.key.toString()] = entry.value.toString();
       }
     }
     return map;
