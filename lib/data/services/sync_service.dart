@@ -24,6 +24,9 @@ class SyncService {
 
   final GoogleSignIn _googleSignIn = GoogleSignIn(
     scopes: [drive.DriveApi.driveFileScope],
+    // Web client ID — read from google-services.json on Android automatically.
+    // For web, also set via <meta name="google-signin-client_id"> in index.html.
+    clientId: '498575043406-dbci3jfmenn1rpgaojakg232m7filvav.apps.googleusercontent.com',
   );
 
   drive.DriveApi? _driveApi;
