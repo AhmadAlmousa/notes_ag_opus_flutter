@@ -108,22 +108,39 @@ class _DashboardScreenState extends ConsumerState<DashboardScreen>
   void _onCategorySelected(String category) {
     setState(() {
       _selectedCategory = category;
-      if (category == 'all') {
-        _recentNotes = ref.read(noteRepoProvider).getRecent(limit: 10);
-      } else {
-        _recentNotes = ref.read(noteRepoProvider).getByCategory(category);
-      }
     });
+    _applyFilters();
   }
 
   void _onSearch(String query) {
-    if (query.isEmpty) {
-      _loadData();
-      return;
+    _applyFilters();
+  }
+
+  /// Combined filter: applies both category and search query.
+  void _applyFilters() {
+    final noteRepo = ref.read(noteRepoProvider);
+    List<Note> results = noteRepo.getAll();
+
+    // 1. Apply Category
+    if (_selectedCategory != 'all') {
+      results = results.where((n) => n.category == _selectedCategory).toList();
     }
-    setState(() {
-      _recentNotes = ref.read(noteRepoProvider).search(query);
-    });
+
+    // 2. Apply Search
+    if (_isSearching && _searchTextController.text.isNotEmpty) {
+      final query = _searchTextController.text.toLowerCase();
+      results = results.where((n) =>
+        (n.title ?? '').toLowerCase().contains(query) ||
+        n.tags.any((t) => t.toLowerCase().contains(query))
+      ).toList();
+    }
+
+    // Limit to 10 for dashboard unless actively searching
+    if (!_isSearching || _searchTextController.text.isEmpty) {
+      results = results.take(10).toList();
+    }
+
+    setState(() => _recentNotes = results);
   }
 
   @override

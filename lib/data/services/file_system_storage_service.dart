@@ -176,7 +176,6 @@ class FileSystemStorageService extends StorageService {
     final notes = getNotes();
     notes['$category/$safeFilename'] = markdownContent;
     await _prefs?.setString('organote_fs_notes_cache', jsonEncode(notes));
-    await _updateCategories(category);
   }
 
   @override
@@ -194,13 +193,10 @@ class FileSystemStorageService extends StorageService {
 
   @override
   List<String> getCategories() {
-    // Start with saved categories
-    final json = _prefs?.getString(_categoriesKey);
-    final saved = json != null
-        ? List<String>.from(jsonDecode(json) as List)
-        : <String>['personal', 'work', 'family'];
+    // Static defaults
+    final defaults = <String>{'personal', 'work', 'family'};
 
-    // Merge categories from actual note paths in the cache
+    // Derive categories from actual note paths in the cache
     final notes = getNotes();
     final fromNotes = <String>{};
     for (final key in notes.keys) {
@@ -210,8 +206,8 @@ class FileSystemStorageService extends StorageService {
       }
     }
 
-    // Combine both, preserving saved order, appending new filesystem categories
-    final result = [...saved];
+    // Combine defaults + filesystem categories, defaults first
+    final result = [...defaults];
     for (final cat in fromNotes) {
       if (!result.contains(cat)) {
         result.add(cat);
@@ -220,22 +216,15 @@ class FileSystemStorageService extends StorageService {
     return result;
   }
 
-  Future<void> _updateCategories(String category) async {
-    final categories = getCategories();
-    if (!categories.contains(category)) {
-      categories.add(category);
-      await _prefs?.setString(_categoriesKey, jsonEncode(categories));
-    }
-  }
-
   @override
   Future<void> addCategory(String category) async {
-    await _updateCategories(category);
+    // No-op: categories are derived from filesystem.
+    // A category appears when a note is saved in that folder.
   }
 
   @override
   Future<void> saveCategories(List<String> categories) async {
-    await _prefs?.setString(_categoriesKey, jsonEncode(categories));
+    // No-op: categories are derived from filesystem.
   }
 
   @override

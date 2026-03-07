@@ -57,7 +57,7 @@ class _NotesListScreenState extends ConsumerState<NotesListScreen>
     super.dispose();
   }
 
-  Future<void> _loadData() async {
+  Future<void> _loadData({bool animate = true}) async {
     final noteRepo = ref.read(noteRepoProvider);
     final categories = ['all', ...noteRepo.getCategories()];
     List<Note> notes = _selectedCategory == 'all'
@@ -73,14 +73,14 @@ class _NotesListScreenState extends ConsumerState<NotesListScreen>
       _notes = notes;
       _isLoading = false;
     });
-    _animationController.forward(from: 0);
+    if (animate) _animationController.forward(from: 0);
   }
 
   void _onCategoryChanged(String category) {
     setState(() {
       _selectedCategory = category;
     });
-    _loadData();
+    _loadData(animate: false);
   }
 
   @override

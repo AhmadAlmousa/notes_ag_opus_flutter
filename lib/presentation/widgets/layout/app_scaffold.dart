@@ -54,23 +54,29 @@ class _BottomNavBar extends StatelessWidget {
           child: Row(
             mainAxisAlignment: MainAxisAlignment.spaceAround,
             children: [
-              _NavItem(
-                icon: Icons.grid_view_rounded,
-                label: 'Home',
-                isSelected: currentIndex == 0,
-                onTap: () => onTap(0),
+              Expanded(
+                child: _NavItem(
+                  icon: Icons.grid_view_rounded,
+                  label: 'Home',
+                  isSelected: currentIndex == 0,
+                  onTap: () => onTap(0),
+                ),
               ),
-              _NavItem(
-                icon: Icons.extension_rounded,
-                label: 'Templates',
-                isSelected: currentIndex == 1,
-                onTap: () => onTap(1),
+              Expanded(
+                child: _NavItem(
+                  icon: Icons.extension_rounded,
+                  label: 'Templates',
+                  isSelected: currentIndex == 1,
+                  onTap: () => onTap(1),
+                ),
               ),
-              _NavItem(
-                icon: Icons.settings_rounded,
-                label: 'Settings',
-                isSelected: currentIndex == 2,
-                onTap: () => onTap(2),
+              Expanded(
+                child: _NavItem(
+                  icon: Icons.settings_rounded,
+                  label: 'Settings',
+                  isSelected: currentIndex == 2,
+                  onTap: () => onTap(2),
+                ),
               ),
             ],
           ),
@@ -119,15 +125,6 @@ class _NavItemState extends State<_NavItem> with SingleTickerProviderStateMixin 
     super.dispose();
   }
 
-  void _handleTapDown(TapDownDetails details) {
-    _controller.forward();
-  }
-
-  void _handleTapUp(TapUpDetails details) {
-    _controller.reverse();
-    widget.onTap();
-  }
-
   void _handleTapCancel() {
     _controller.reverse();
   }
@@ -139,11 +136,16 @@ class _NavItemState extends State<_NavItem> with SingleTickerProviderStateMixin 
         ? theme.colorScheme.primary
         : theme.colorScheme.onSurfaceVariant.withValues(alpha: 0.6);
 
-    return GestureDetector(
-      onTapDown: _handleTapDown,
-      onTapUp: _handleTapUp,
+    return InkWell(
+      onTapDown: (_) => _controller.forward(),
+      onTapUp: (_) {
+        _controller.reverse();
+        widget.onTap();
+      },
       onTapCancel: _handleTapCancel,
-      behavior: HitTestBehavior.opaque,
+      customBorder: RoundedRectangleBorder(
+        borderRadius: BorderRadius.circular(12),
+      ),
       child: AnimatedBuilder(
         animation: _scaleAnimation,
         builder: (context, child) {
@@ -152,9 +154,8 @@ class _NavItemState extends State<_NavItem> with SingleTickerProviderStateMixin 
             child: child,
           );
         },
-        child: Container(
-          width: 64,
-          padding: const EdgeInsets.symmetric(vertical: 4),
+        child: Padding(
+          padding: const EdgeInsets.symmetric(vertical: 4, horizontal: 8),
           child: Column(
             mainAxisSize: MainAxisSize.min,
             children: [

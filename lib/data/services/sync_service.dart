@@ -45,8 +45,14 @@ class SyncService {
   /// Folder ID cache to avoid repeated Drive API lookups and race conditions.
   final Map<String, String> _folderIdCache = {};
 
+  /// In-flight folder creation locks to prevent duplicate creation from concurrent calls.
+  final Map<String, Completer<String>> _folderLocks = {};
+
   /// Sequential push lock to prevent concurrent pushDocument race conditions.
   Completer<void>? _pushLock;
+
+  /// Last authentication error message for UI display.
+  String? _lastAuthError;
 
   static const _rootFolderIdKey = 'organote_drive_root_folder_id';
 
@@ -58,6 +64,9 @@ class SyncService {
 
   /// Currently signed-in account email.
   String? get accountEmail => _currentEmail;
+
+  /// Last auth error (if any) — for displaying to the user.
+  String? get lastAuthError => _lastAuthError;
 
   // ── Initialization (v7 requirement) ─────────────────────────────────
 
@@ -83,7 +92,22 @@ class SyncService {
       var authorization = await authClient.authorizationForScopes(_driveScopes);
       if (authorization == null) {
         // Prompt user for scope authorization
-        authorization = await authClient.authorizeScopes(_driveScopes);
+        // This opens a popup on web which may be blocked by COOP headers
+        try {
+          authorization = await authClient.authorizeScopes(_driveScopes);
+        } catch (e) {
+          // On web with COOP headers, the popup is blocked.
+          _lastAuthError = 'Drive authorization popup was blocked. '
+              'If you are using a reverse proxy, remove the '
+              'Cross-Origin-Opener-Policy header to allow sync.';
+          debugPrint('[Sync] Authorization popup blocked (COOP): $e');
+          return false;
+        }
+      }
+
+      if (authorization == null) {
+        _lastAuthError = 'Drive authorization was denied.';
+        return false;
       }
 
       // Build the googleapis HTTP client via the extension
@@ -92,9 +116,11 @@ class SyncService {
       _driveApi = drive.DriveApi(httpClient);
       _rootFolderId = await _getOrCreateFolder('Organote');
       _connected = true;
+      _lastAuthError = null;
       return true;
     } catch (e) {
-      debugPrint('Drive client error: $e');
+      _lastAuthError = 'Drive client error: $e';
+      debugPrint('[Sync] Drive client error: $e');
       return false;
     }
   }
@@ -166,6 +192,11 @@ class SyncService {
     _storage = storage;
     try {
       await _ensureInitialized();
+
+      // On web, don't auto-trigger the sign-in UI.
+      // attemptLightweightAuthentication() shows the FedCM prompt which
+      // is disorienting on page load. User must explicitly click sign-in.
+      if (kIsWeb) return false;
 
       final maybeFuture = _googleSignIn.attemptLightweightAuthentication();
       if (maybeFuture == null) return false;
@@ -387,7 +418,7 @@ class SyncService {
 
   // ── Helpers ─────────────────────────────────────────────────────────
 
-  /// Get or create the "Organote" root folder. Uses cache to prevent duplicates.
+  /// Get or create the "Organote" root folder. Uses cache + locks to prevent duplicates.
   Future<String> _getOrCreateFolder(String name,
       {String? parentId}) async {
     final parent = parentId ?? 'root';
@@ -398,36 +429,54 @@ class SyncService {
       return _folderIdCache[cacheKey]!;
     }
 
-    final q = "name = '$name' and mimeType = 'application/vnd.google-apps.folder'"
-        " and '$parent' in parents and trashed = false";
-    final result = await _driveApi!.files.list(
-      q: q,
-      spaces: 'drive',
-      $fields: 'files(id, name)',
-    );
-
-    if (result.files != null && result.files!.isNotEmpty) {
-      final folderId = result.files!.first.id!;
-      _folderIdCache[cacheKey] = folderId;
-      return folderId;
+    // If another call is already creating this folder, wait for it
+    if (_folderLocks.containsKey(cacheKey)) {
+      return _folderLocks[cacheKey]!.future;
     }
 
-    // Create folder
-    final folder = drive.File()
-      ..name = name
-      ..mimeType = 'application/vnd.google-apps.folder'
-      ..parents = [parent];
-    final created = await _driveApi!.files.create(folder);
-    final newId = created.id!;
-    _folderIdCache[cacheKey] = newId;
+    // Take the lock
+    final completer = Completer<String>();
+    _folderLocks[cacheKey] = completer;
 
-    // Persist root folder ID if this is the Organote folder
-    if (name == 'Organote' && parent == 'root') {
-      final prefs = await SharedPreferences.getInstance();
-      await prefs.setString(_rootFolderIdKey, newId);
+    try {
+      final q = "name = '$name' and mimeType = 'application/vnd.google-apps.folder'"
+          " and '$parent' in parents and trashed = false";
+      final result = await _driveApi!.files.list(
+        q: q,
+        spaces: 'drive',
+        $fields: 'files(id, name)',
+      );
+
+      if (result.files != null && result.files!.isNotEmpty) {
+        final folderId = result.files!.first.id!;
+        _folderIdCache[cacheKey] = folderId;
+        completer.complete(folderId);
+        return folderId;
+      }
+
+      // Create folder
+      final folder = drive.File()
+        ..name = name
+        ..mimeType = 'application/vnd.google-apps.folder'
+        ..parents = [parent];
+      final created = await _driveApi!.files.create(folder);
+      final newId = created.id!;
+      _folderIdCache[cacheKey] = newId;
+
+      // Persist root folder ID if this is the Organote folder
+      if (name == 'Organote' && parent == 'root') {
+        final prefs = await SharedPreferences.getInstance();
+        await prefs.setString(_rootFolderIdKey, newId);
+      }
+
+      completer.complete(newId);
+      return newId;
+    } catch (e) {
+      completer.completeError(e);
+      rethrow;
+    } finally {
+      _folderLocks.remove(cacheKey);
     }
-
-    return newId;
   }
 
   /// Find a sub-folder by name.

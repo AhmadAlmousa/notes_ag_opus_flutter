@@ -52,6 +52,7 @@ dependencies:
   flutter_riverpod: ^3.2.1
   googleapis: ^16.0.0
   google_sign_in: ^7.2.0
+  google_sign_in_web: ^1.1.0
   extension_google_sign_in_as_googleapis_auth: ^3.0.0
   path_provider: ^2.1.5
   path: ^1.9.1

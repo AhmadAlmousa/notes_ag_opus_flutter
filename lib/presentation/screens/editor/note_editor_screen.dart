@@ -111,12 +111,8 @@ class _NoteEditorScreenState extends ConsumerState<NoteEditorScreen> {
   }
 
   void _markChanged() {
-    if (!_hasChanges) {
-      setState(() {
-        _hasChanges = true;
-        _saveState = _SaveState.unsaved;
-      });
-    }
+    _hasChanges = true;
+    _saveState = _SaveState.unsaved;
     // Restart the 2-second auto-save debounce timer
     _autoSaveTimer?.cancel();
     _autoSaveTimer = Timer(const Duration(seconds: 2), _autoSave);
@@ -196,7 +192,19 @@ class _NoteEditorScreenState extends ConsumerState<NoteEditorScreen> {
     final title = _titleController.text.trim();
     if (title.isEmpty) return;
 
-    final filename = _generateSafeFilename(title);
+    // For auto-saves (navigate == false): keep the existing filename.
+    // Only rename the file on explicit save or back-button.
+    final String filename;
+    if (navigate && _originalFilename != null) {
+      // Explicit save — generate new filename from title
+      filename = _generateSafeFilename(title);
+    } else if (_originalFilename != null && !_isNew) {
+      // Auto-save — keep existing filename
+      filename = _originalFilename!;
+    } else {
+      // New note — generate filename
+      filename = _generateSafeFilename(title);
+    }
 
     final updatedNote = _note!.copyWith(
       title: title,
@@ -265,7 +273,7 @@ class _NoteEditorScreenState extends ConsumerState<NoteEditorScreen> {
       final newCategory = _originalCategory;
       if (oldFilename != newFilename || oldCategory != newCategory) {
         if (mounted) {
-          context.go('/notes/$newCategory/$newFilename');
+          context.replace('/notes/$newCategory/$newFilename');
         }
         return false; // Don't pop — we navigated
       }

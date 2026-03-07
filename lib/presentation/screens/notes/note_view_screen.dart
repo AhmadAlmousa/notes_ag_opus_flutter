@@ -144,8 +144,9 @@ class _NoteViewScreenState extends ConsumerState<NoteViewScreen>
         bottom: PreferredSize(
           preferredSize: const Size.fromHeight(28),
           child: Padding(
-            padding: const EdgeInsets.only(left: 16, bottom: 8),
+            padding: const EdgeInsets.only(bottom: 8),
             child: Row(
+              mainAxisAlignment: MainAxisAlignment.center,
               children: [
                 Container(
                   padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 2),
@@ -266,7 +267,13 @@ class _NoteViewScreenState extends ConsumerState<NoteViewScreen>
                   );
                   // Notify listening screens to rebuild
                   ref.read(syncTriggerProvider.notifier).trigger();
-                  if (mounted) context.go('/');
+                  if (mounted) {
+                    if (context.canPop()) {
+                      context.pop();
+                    } else {
+                      context.go('/');
+                    }
+                  }
                 }
               }
             },
@@ -781,7 +788,9 @@ class _NoteViewScreenState extends ConsumerState<NoteViewScreen>
           margin: const EdgeInsets.only(bottom: 12),
           padding: const EdgeInsets.all(12),
           decoration: BoxDecoration(
-            color: theme.colorScheme.surfaceContainerHighest.withValues(alpha: 0.3),
+            color: theme.brightness == Brightness.dark
+                ? const Color(0xFF1E1E1E)
+                : theme.colorScheme.surfaceContainerHighest.withValues(alpha: 0.3),
             borderRadius: BorderRadius.circular(8),
             border: Border.all(
               color: theme.colorScheme.outline.withValues(alpha: 0.05),

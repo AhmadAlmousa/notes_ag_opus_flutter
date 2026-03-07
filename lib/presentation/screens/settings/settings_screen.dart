@@ -12,6 +12,9 @@ import '../../../core/providers.dart';
 import '../../../core/export_import_service.dart';
 import '../../../core/theme/app_theme.dart';
 import '../../widgets/dialogs/sync_conflict_dialog.dart';
+import '../../widgets/google_sign_in_button_stub.dart'
+    if (dart.library.js_interop) '../../widgets/google_sign_in_button_web.dart'
+    as gsi_button;
 
 
 /// Settings screen.
@@ -834,81 +837,29 @@ class _SettingsScreenState extends ConsumerState<SettingsScreen>
 
           // Action buttons
           if (!isConnected) ...[
+            if (kIsWeb) ...[
+              // Web: Use Google's native FedCM button (no popups, immune to COOP/COEP)
+              Center(
+                child: _buildGoogleSignInButton(syncService, storage),
+              ),
+            ] else ...[
             SizedBox(
               width: double.infinity,
               child: ElevatedButton.icon(
                 onPressed: () async {
                   final success = await syncService.signIn(storage: storage);
                   if (success) {
-                    bool shouldSync = true;
-                    final templates = storage.getTemplates();
-                    final notes = storage.getNotes();
-
-                    if (templates.isNotEmpty || notes.isNotEmpty) {
-                      if (context.mounted) {
-                        final result = await showDialog<bool>(
-                          context: context,
-                          barrierDismissible: false,
-                          builder: (context) => SyncConflictDialog(storage: storage),
-                        );
-                        shouldSync = result == true;
-                      }
-                    }
-
-                    if (!shouldSync) {
-                      await syncService.signOut();
-                      if (context.mounted) {
-                        ScaffoldMessenger.of(context).showSnackBar(
-                          const SnackBar(
-                            content: Text('Sync cancelled.'),
-                            backgroundColor: Colors.orange,
-                          ),
-                        );
-                      }
-                      setState(() {});
-                      return;
-                    }
-
-                    // Wire up remote change callback
-                    syncService.onRemoteChange = () {
-                      try {
-                        ref.read(noteRepoProvider).clearCache();
-                        ref.read(templateRepoProvider).clearCache();
-                      } catch (_) {}
-                      ref.read(syncTriggerProvider.notifier).trigger();
-                    };
-                    
-                    if (context.mounted) {
-                      showDialog(
-                        context: context,
-                        barrierDismissible: false,
-                        builder: (context) => const AlertDialog(
-                          content: Row(
-                            children: [
-                              CircularProgressIndicator(),
-                              SizedBox(width: 16),
-                              Text('Syncing with Google Drive...'),
-                            ],
-                          ),
-                        ),
-                      );
-                    }
-                    
-                    await syncService.pullAll();
-                    
-                    if (context.mounted) {
-                      Navigator.pop(context); // close dialog
-                    }
-                    
-                    ref.read(syncStatusProvider.notifier).setConnected(true);
+                    await _handlePostSignIn(syncService, storage);
                   }
                   if (context.mounted) {
+                    final errorMsg = syncService.lastAuthError;
                     ScaffoldMessenger.of(context).showSnackBar(
                       SnackBar(
                         content: Text(success
                             ? 'Connected to Google Drive!'
-                            : 'Sign-in cancelled or failed.'),
+                            : errorMsg ?? 'Sign-in cancelled or failed.'),
                         backgroundColor: success ? Colors.green : Colors.red,
+                        duration: Duration(seconds: success ? 3 : 6),
                       ),
                     );
                   }
@@ -921,6 +872,7 @@ class _SettingsScreenState extends ConsumerState<SettingsScreen>
                 ),
               ),
             ),
+            ],
           ] else ...[
             Row(
               children: [
@@ -1064,5 +1016,114 @@ class _SettingsScreenState extends ConsumerState<SettingsScreen>
       default:
         return 'Browser Storage';
     }
+  }
+
+  // ── FedCM / Google Sign-In helpers ─────────────────────────────────
+
+  /// Build Google's native FedCM sign-in button for web.
+  /// Uses `renderButton` from google_sign_in_web which triggers FedCM,
+  /// bypassing COOP/COEP restrictions entirely.
+  Widget _buildGoogleSignInButton(
+    dynamic syncService,
+    dynamic storage,
+  ) {
+    if (!kIsWeb) return const SizedBox.shrink();
+
+    // Set up the sync service listener — signIn on web sets up
+    // authenticationEvents and calls attemptLightweightAuthentication.
+    // Once the user clicks Google's FedCM button, auth events fire
+    // back through this listener.
+    _webSignInFuture ??= _setupWebSignIn(syncService, storage);
+
+    // Render Google's native FedCM sign-in button
+    return _buildWebRenderButton();
+  }
+
+  Future<void>? _webSignInFuture;
+
+  Future<void> _setupWebSignIn(dynamic syncService, dynamic storage) async {
+    final success = await syncService.signIn(storage: storage);
+    if (success) {
+      await _handlePostSignIn(syncService, storage);
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(
+            content: Text('Connected to Google Drive!'),
+            backgroundColor: Colors.green,
+          ),
+        );
+        setState(() {});
+      }
+    }
+  }
+
+  /// Returns Google's native renderButton widget.
+  Widget _buildWebRenderButton() {
+    return gsi_button.buildGoogleSignInButtonPlatform();
+  }
+
+  /// Common post-sign-in logic: conflict dialog, remote change callback, initial pull.
+  Future<void> _handlePostSignIn(dynamic syncService, dynamic storage) async {
+    bool shouldSync = true;
+    final templates = storage.getTemplates() as Map;
+    final notes = storage.getNotes() as Map;
+
+    if (templates.isNotEmpty || notes.isNotEmpty) {
+      if (mounted) {
+        final result = await showDialog<bool>(
+          context: context,
+          barrierDismissible: false,
+          builder: (context) => SyncConflictDialog(storage: storage),
+        );
+        shouldSync = result == true;
+      }
+    }
+
+    if (!shouldSync) {
+      await syncService.signOut();
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(
+            content: Text('Sync cancelled.'),
+            backgroundColor: Colors.orange,
+          ),
+        );
+        setState(() {});
+      }
+      return;
+    }
+
+    // Wire up remote change callback
+    syncService.onRemoteChange = () {
+      try {
+        ref.read(noteRepoProvider).clearCache();
+        ref.read(templateRepoProvider).clearCache();
+      } catch (_) {}
+      ref.read(syncTriggerProvider.notifier).trigger();
+    };
+
+    if (mounted) {
+      showDialog(
+        context: context,
+        barrierDismissible: false,
+        builder: (context) => const AlertDialog(
+          content: Row(
+            children: [
+              CircularProgressIndicator(),
+              SizedBox(width: 16),
+              Text('Syncing with Google Drive...'),
+            ],
+          ),
+        ),
+      );
+    }
+
+    await syncService.pullAll();
+
+    if (mounted) {
+      Navigator.pop(context); // close dialog
+    }
+
+    ref.read(syncStatusProvider.notifier).setConnected(true);
   }
 }
