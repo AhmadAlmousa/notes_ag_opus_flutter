@@ -1,0 +1,156 @@
+{
+  "@@locale": "en",
+
+  "appName": "Organote",
+  "appTagline": "Manage your structured data",
+
+  "home": "Home",
+  "templates": "Templates",
+  "settings": "Settings",
+
+  "searchHint": "Search notes, tags, or content...",
+  "recentNotes": "Recent Notes",
+  "allNotes": "All Notes",
+  "noNotesYet": "No notes yet",
+  "createFirstNote": "Create your first note from a template",
+  "createNewNote": "Create New Note",
+  "noTemplatesYet": "No templates yet",
+  "createTemplate": "Create Template",
+  "editCategories": "Edit Categories",
+  "addCategory": "Add Category",
+  "categoryName": "Category name",
+  "renameCategory": "Rename Category",
+  "newName": "New name",
+  "deleteCategory": "Delete Category?",
+  "deleteCategoryConfirm": "All notes in \"{name}\" will be deleted. This cannot be undone.",
+  "@deleteCategoryConfirm": {
+    "placeholders": {
+      "name": { "type": "String" }
+    }
+  },
+  "noCategories": "No categories",
+  "edit": "Edit",
+  "add": "Add",
+  "close": "Close",
+  "cancel": "Cancel",
+  "delete": "Delete",
+  "rename": "Rename",
+  "save": "Save",
+  "restore": "Restore",
+  "view": "View",
+
+  "settingsTitle": "Settings",
+  "customizeExperience": "Customize your experience",
+  "appearance": "Appearance",
+  "auto": "Auto",
+  "light": "Light",
+  "dark": "Dark",
+  "oled": "OLED",
+  "data": "Data",
+  "templatesCount": "{count} created",
+  "@templatesCount": {
+    "placeholders": { "count": { "type": "int" } }
+  },
+  "notesCount": "{count} saved",
+  "@notesCount": {
+    "placeholders": { "count": { "type": "int" } }
+  },
+  "recycleBin": "Recycle Bin",
+  "noDeletedNotes": "No deleted notes",
+  "deletedNotesCount": "{count} deleted note(s)",
+  "@deletedNotesCount": {
+    "placeholders": { "count": { "type": "int" } }
+  },
+  "autoPurged": "Auto-purged after 7 days",
+  "recycleBinEmpty": "Recycle bin is empty",
+  "emptyAll": "Empty All",
+  "deletePermanently": "Delete permanently",
+  "daysLeft": "{days}d left",
+  "@daysLeft": {
+    "placeholders": { "days": { "type": "int" } }
+  },
+
+  "storage": "Storage",
+  "storageType": "Type",
+  "storagePath": "Path",
+  "changeDirectory": "Change Directory",
+  "localFilesystem": "Local Filesystem",
+  "browserStorage": "Browser Storage",
+
+  "sync": "Sync",
+  "syncDescription": "Sync your notes and templates across devices using your Google Drive account. Files are stored in an \"Organote\" folder.",
+  "connected": "Connected",
+  "notConnected": "Not connected",
+  "signInWithGoogle": "Sign in with Google",
+  "signOut": "Sign Out",
+  "syncNow": "Sync Now",
+  "syncing": "Syncing with Google Drive...",
+  "syncConnected": "Connected to Google Drive!",
+  "syncFailed": "Sign-in failed",
+  "syncCancelled": "Sync cancelled.",
+  "pushAll": "Push All",
+  "pullAll": "Pull All",
+
+  "about": "About",
+  "version": "Version",
+  "builtWith": "Built with Flutter",
+  "exportData": "Export Data",
+  "importData": "Import Data",
+
+  "language": "Language",
+  "english": "English",
+  "arabic": "العربية",
+
+  "deleteNote": "Delete Note?",
+  "deleteNoteConfirm": "The note will be moved to the recycle bin and permanently deleted after 7 days.",
+  "noteNotFound": "Note not found",
+  "note": "Note",
+  "noRecords": "No records",
+  "recordCount": "{count} record(s)",
+  "@recordCount": {
+    "placeholders": { "count": { "type": "int" } }
+  },
+  "share": "Share",
+  "viewSource": "View Source",
+  "noteCopied": "Note copied to clipboard for sharing",
+  "copiedToClipboard": "{label} copied to clipboard",
+  "@copiedToClipboard": {
+    "placeholders": { "label": { "type": "String" } }
+  },
+  "expandAll": "Expand All",
+  "collapseAll": "Collapse All",
+
+  "newTemplate": "New Template",
+  "editTemplate": "Edit Template",
+  "templateName": "Template name",
+  "templateId": "Template ID",
+  "noTemplatesCreated": "No templates created yet",
+  "createFirstTemplate": "Create your first template to start organizing your data",
+  "fields": "fields",
+  "layout": "Layout",
+  "deleteTemplate": "Delete Template?",
+  "deleteTemplateConfirm": "This will permanently delete this template.",
+
+  "templateBuilder": "Template Builder",
+  "basic": "Basic",
+  "fieldsTab": "Fields",
+  "display": "Display",
+  "actions": "Actions",
+  "addField": "Add Field",
+  "fieldLabel": "Field label",
+  "fieldType": "Field type",
+  "required": "Required",
+  "multilineTextbox": "Multiline Textbox",
+  "customEmojiIcon": "Custom Emoji Icon",
+  "selectEmoji": "Select Emoji",
+  "noEmoji": "No emoji",
+  "clearEmoji": "Clear Emoji",
+  "editEmoji": "Edit Emoji",
+  "defaultValue": "Default value",
+  "options": "Options (comma-separated)",
+
+  "pageNotFound": "Page not found",
+  "goHome": "Go Home",
+  "failedToLoadPage": "Failed to load page",
+  "gettingReady": "Getting ready"
+}

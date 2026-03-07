@@ -2,9 +2,11 @@ import 'dart:async';
 import 'dart:convert';
 
 import 'package:flutter/foundation.dart';
+import 'package:flutter/widgets.dart';
 import 'package:google_sign_in/google_sign_in.dart';
 import 'package:googleapis/drive/v3.dart' as drive;
 import 'package:extension_google_sign_in_as_googleapis_auth/extension_google_sign_in_as_googleapis_auth.dart';
+import 'package:shared_preferences/shared_preferences.dart';
 
 import 'storage_service.dart';
 
@@ -22,17 +24,31 @@ class SyncService {
   static SyncService? _instance;
   static SyncService get instance => _instance ??= SyncService._();
 
-  final GoogleSignIn _googleSignIn = GoogleSignIn(
-    scopes: [drive.DriveApi.driveFileScope],
-    // Web client ID — read from google-services.json on Android automatically.
-    // For web, also set via <meta name="google-signin-client_id"> in index.html.
-    clientId: '498575043406-dbci3jfmenn1rpgaojakg232m7filvav.apps.googleusercontent.com',
-  );
+  static const _clientId = '498575043406-dbci3jfmenn1rpgaojakg232m7filvav.apps.googleusercontent.com';
+  static const _driveScopes = [drive.DriveApi.driveFileScope];
 
+  final GoogleSignIn _googleSignIn = GoogleSignIn.instance;
+
+  bool _initialized = false;
   drive.DriveApi? _driveApi;
   StorageService? _storage;
   String? _rootFolderId; // "Organote" folder ID
   bool _connected = false;
+  String? _currentEmail;
+  StreamSubscription<GoogleSignInAuthenticationEvent>? _authSubscription;
+  Timer? _pollTimer;
+  Timer? _syncDebounceTimer;
+  static const _pollInterval = Duration(minutes: 5);
+  static const _syncDebounce = Duration(seconds: 5);
+  static const _maxRetries = 3;
+
+  /// Folder ID cache to avoid repeated Drive API lookups and race conditions.
+  final Map<String, String> _folderIdCache = {};
+
+  /// Sequential push lock to prevent concurrent pushDocument race conditions.
+  Completer<void>? _pushLock;
+
+  static const _rootFolderIdKey = 'organote_drive_root_folder_id';
 
   /// Callback invoked when a remote change is received and applied locally.
   OnRemoteChange? onRemoteChange;
@@ -41,7 +57,47 @@ class SyncService {
   bool get isConnected => _connected;
 
   /// Currently signed-in account email.
-  String? get accountEmail => _googleSignIn.currentUser?.email;
+  String? get accountEmail => _currentEmail;
+
+  // ── Initialization (v7 requirement) ─────────────────────────────────
+
+  Future<void> _ensureInitialized() async {
+    if (_initialized) return;
+    await _googleSignIn.initialize(
+      clientId: _clientId,
+      // serverClientId is NOT supported on web — omit it there
+      serverClientId: kIsWeb ? null : _clientId,
+    );
+    _initialized = true;
+  }
+
+  /// Obtain an authenticated HTTP client from a GoogleSignInAccount.
+  Future<bool> _obtainDriveClientFrom(GoogleSignInAccount account) async {
+    try {
+      _currentEmail = account.email;
+
+      // Get authorization for Drive scopes
+      final authClient = account.authorizationClient;
+
+      // First try without prompting
+      var authorization = await authClient.authorizationForScopes(_driveScopes);
+      if (authorization == null) {
+        // Prompt user for scope authorization
+        authorization = await authClient.authorizeScopes(_driveScopes);
+      }
+
+      // Build the googleapis HTTP client via the extension
+      final httpClient = authorization.authClient(scopes: _driveScopes);
+
+      _driveApi = drive.DriveApi(httpClient);
+      _rootFolderId = await _getOrCreateFolder('Organote');
+      _connected = true;
+      return true;
+    } catch (e) {
+      debugPrint('Drive client error: $e');
+      return false;
+    }
+  }
 
   // ── Authentication ──────────────────────────────────────────────────
 
@@ -49,16 +105,56 @@ class SyncService {
   Future<bool> signIn({required StorageService storage}) async {
     _storage = storage;
     try {
-      final account = await _googleSignIn.signIn();
-      if (account == null) return false; // user cancelled
+      await _ensureInitialized();
 
-      final httpClient = await _googleSignIn.authenticatedClient();
-      if (httpClient == null) return false;
+      if (kIsWeb) {
+        // On web, authenticate() is not supported.
+        final completer = Completer<bool>();
+        _authSubscription?.cancel();
+        _authSubscription = _googleSignIn.authenticationEvents.listen(
+          (event) async {
+            if (event is GoogleSignInAuthenticationEventSignIn) {
+              final account = event.user;
+              final result = await _obtainDriveClientFrom(account);
+              if (result) {
+                startPolling();
+                // Initial push on sign-in
+                Future.microtask(() => pushAll());
+              }
+              if (!completer.isCompleted) completer.complete(result);
+            }
+          },
+          onError: (e) {
+            debugPrint('Auth stream error: $e');
+            if (!completer.isCompleted) completer.complete(false);
+          },
+        );
+        _googleSignIn.attemptLightweightAuthentication();
+        return await completer.future.timeout(
+          const Duration(seconds: 120),
+          onTimeout: () => false,
+        );
+      }
 
-      _driveApi = drive.DriveApi(httpClient);
-      _rootFolderId = await _getOrCreateFolder('Organote');
-      _connected = true;
-      return true;
+      // Non-web: use standard authenticate()
+      final account = await _googleSignIn.authenticate(
+        scopeHint: _driveScopes,
+      );
+
+      final result = await _obtainDriveClientFrom(account);
+      if (result) {
+        startPolling();
+        // Initial push on sign-in
+        Future.microtask(() => pushAll());
+      }
+      return result;
+    } on GoogleSignInException catch (e) {
+      if (e.code == GoogleSignInExceptionCode.canceled) {
+        debugPrint('Google Sign-In cancelled by user');
+        return false;
+      }
+      debugPrint('Google Sign-In failed: $e');
+      return false;
     } catch (e) {
       debugPrint('Google Sign-In failed: $e');
       return false;
@@ -69,16 +165,17 @@ class SyncService {
   Future<bool> tryReconnect({required StorageService storage}) async {
     _storage = storage;
     try {
-      final account = await _googleSignIn.signInSilently();
+      await _ensureInitialized();
+
+      final maybeFuture = _googleSignIn.attemptLightweightAuthentication();
+      if (maybeFuture == null) return false;
+
+      final account = await maybeFuture;
       if (account == null) return false;
 
-      final httpClient = await _googleSignIn.authenticatedClient();
-      if (httpClient == null) return false;
-
-      _driveApi = drive.DriveApi(httpClient);
-      _rootFolderId = await _getOrCreateFolder('Organote');
-      _connected = true;
-      return true;
+      final result = await _obtainDriveClientFrom(account);
+      if (result) startPolling();
+      return result;
     } catch (_) {
       return false;
     }
@@ -86,63 +183,122 @@ class SyncService {
 
   /// Sign out and disconnect.
   Future<void> signOut() async {
+    stopPolling();
+    _syncDebounceTimer?.cancel();
     await _googleSignIn.signOut();
     _driveApi = null;
     _rootFolderId = null;
     _connected = false;
+    _currentEmail = null;
+  }
+
+  // ── Polling ─────────────────────────────────────────────────────────
+
+  /// Start periodic remote change polling.
+  void startPolling() {
+    _pollTimer?.cancel();
+    _pollTimer = Timer.periodic(_pollInterval, (_) => pullAll());
+    debugPrint('[Sync] Polling started (every ${_pollInterval.inMinutes}m)');
+  }
+
+  /// Stop periodic polling.
+  void stopPolling() {
+    _pollTimer?.cancel();
+    _pollTimer = null;
+    debugPrint('[Sync] Polling stopped');
+  }
+
+  /// Schedule a debounced pull after a push to detect concurrent edits.
+  void _scheduleSyncAfterPush() {
+    _syncDebounceTimer?.cancel();
+    _syncDebounceTimer = Timer(_syncDebounce, () => pullAll());
   }
 
   // ── Push operations ─────────────────────────────────────────────────
 
-  /// Push a single document to Google Drive.
-  /// [path] is e.g. "notes/personal/myfile.md" or "templates/family_login.md".
+  /// Acquire sequential push lock to avoid folder-creation race conditions.
+  Future<void> _acquirePushLock() async {
+    while (_pushLock != null) {
+      await _pushLock!.future;
+    }
+    _pushLock = Completer<void>();
+  }
+
+  void _releasePushLock() {
+    final lock = _pushLock;
+    _pushLock = null;
+    lock?.complete();
+  }
+
+  /// Push a single document to Google Drive with retry.
   Future<void> pushDocument(String path, String content) async {
     if (_driveApi == null || _rootFolderId == null) return;
+
+    await _acquirePushLock();
     try {
-      final parentId = await _ensureFolderPath(path);
-      final fileName = path.split('/').last;
+      for (int attempt = 0; attempt < _maxRetries; attempt++) {
+        try {
+          final parentId = await _ensureFolderPath(path);
+          final fileName = path.split('/').last;
 
-      final existing = await _findFile(fileName, parentId);
-      final media = drive.Media(
-        Stream.value(utf8.encode(content)),
-        utf8.encode(content).length,
-      );
+          final existing = await _findFile(fileName, parentId);
+          final media = drive.Media(
+            Stream.value(utf8.encode(content)),
+            utf8.encode(content).length,
+          );
 
-      if (existing != null) {
-        // Update existing file
-        await _driveApi!.files.update(
-          drive.File()..modifiedTime = DateTime.now().toUtc(),
-          existing.id!,
-          uploadMedia: media,
-        );
-      } else {
-        // Create new file
-        await _driveApi!.files.create(
-          drive.File()
-            ..name = fileName
-            ..parents = [parentId]
-            ..mimeType = 'text/markdown'
-            ..modifiedTime = DateTime.now().toUtc(),
-          uploadMedia: media,
-        );
+          if (existing != null) {
+            await _driveApi!.files.update(
+              drive.File()..modifiedTime = DateTime.now().toUtc(),
+              existing.id!,
+              uploadMedia: media,
+            );
+          } else {
+            await _driveApi!.files.create(
+              drive.File()
+                ..name = fileName
+                ..parents = [parentId]
+                ..mimeType = 'text/markdown'
+                ..modifiedTime = DateTime.now().toUtc(),
+              uploadMedia: media,
+            );
+          }
+
+          debugPrint('[Sync] Pushed: $path');
+          _scheduleSyncAfterPush();
+          return; // Success — exit retry loop
+        } catch (e) {
+          debugPrint('[Sync] pushDocument attempt ${attempt + 1} failed: $e');
+          if (attempt < _maxRetries - 1) {
+            await Future.delayed(Duration(seconds: (attempt + 1) * 2));
+          }
+        }
       }
-    } catch (e) {
-      debugPrint('pushDocument error: $e');
+    } finally {
+      _releasePushLock();
     }
   }
 
-  /// Push a deletion to Google Drive.
+  /// Push a deletion to Google Drive with retry.
   Future<void> pushDeletion(String path) async {
     if (_driveApi == null || _rootFolderId == null) return;
-    try {
-      final parentId = await _ensureFolderPath(path);
-      final fileName = path.split('/').last;
-      final existing = await _findFile(fileName, parentId);
-      if (existing != null) {
-        await _driveApi!.files.delete(existing.id!);
+
+    for (int attempt = 0; attempt < _maxRetries; attempt++) {
+      try {
+        final parentId = await _ensureFolderPath(path);
+        final fileName = path.split('/').last;
+        final existing = await _findFile(fileName, parentId);
+        if (existing != null) {
+          await _driveApi!.files.delete(existing.id!);
+        }
+        debugPrint('[Sync] Deleted remotely: $path');
+        return;
+      } catch (e) {
+        debugPrint('[Sync] pushDeletion attempt ${attempt + 1} failed: $e');
+        if (attempt < _maxRetries - 1) {
+          await Future.delayed(Duration(seconds: (attempt + 1) * 2));
+        }
       }
-    } catch (e) {
-      debugPrint('pushDeletion error: $e');
     }
   }
 
@@ -170,6 +326,8 @@ class SyncService {
     if (_driveApi == null || _storage == null || _rootFolderId == null) return;
 
     try {
+      bool hasChanges = false;
+
       // Pull templates
       final templatesFolderId = await _findFolder('templates', _rootFolderId!);
       if (templatesFolderId != null) {
@@ -178,7 +336,11 @@ class SyncService {
           final content = await _downloadFile(file.id!);
           if (content != null && file.name != null) {
             final templateId = file.name!.replaceAll('.md', '');
-            await _storage!.saveTemplate(templateId, content);
+            final existing = _storage!.getTemplates()[templateId];
+            if (existing != content) {
+              await _storage!.saveTemplate(templateId, content);
+              hasChanges = true;
+            }
           }
         }
       }
@@ -186,7 +348,6 @@ class SyncService {
       // Pull notes (recursive — category folders)
       final notesFolderId = await _findFolder('notes', _rootFolderId!);
       if (notesFolderId != null) {
-        // List category folders
         final categoryFolders = await _listFolders(notesFolderId);
         for (final catFolder in categoryFolders) {
           final category = catFolder.name ?? 'unknown';
@@ -194,16 +355,27 @@ class SyncService {
           for (final file in noteFiles) {
             final content = await _downloadFile(file.id!);
             if (content != null && file.name != null) {
-              await _storage!.saveNote(category, file.name!, content);
+              final existing = _storage!.getNote(category, file.name!);
+              if (existing != content) {
+                await _storage!.saveNote(category, file.name!, content);
+                hasChanges = true;
+              }
             }
           }
         }
       }
 
-      // Notify UI
-      onRemoteChange?.call();
+      // Only notify UI if something actually changed
+      if (hasChanges) {
+        debugPrint('[Sync] Remote changes detected and applied');
+        try {
+          onRemoteChange?.call();
+        } catch (e) {
+          debugPrint('[Sync] onRemoteChange callback error: $e');
+        }
+      }
     } catch (e) {
-      debugPrint('pullAll error: $e');
+      debugPrint('[Sync] pullAll error: $e');
     }
   }
 
@@ -215,10 +387,17 @@ class SyncService {
 
   // ── Helpers ─────────────────────────────────────────────────────────
 
-  /// Get or create the "Organote" root folder.
+  /// Get or create the "Organote" root folder. Uses cache to prevent duplicates.
   Future<String> _getOrCreateFolder(String name,
       {String? parentId}) async {
     final parent = parentId ?? 'root';
+    final cacheKey = '$parent/$name';
+
+    // Check cache first
+    if (_folderIdCache.containsKey(cacheKey)) {
+      return _folderIdCache[cacheKey]!;
+    }
+
     final q = "name = '$name' and mimeType = 'application/vnd.google-apps.folder'"
         " and '$parent' in parents and trashed = false";
     final result = await _driveApi!.files.list(
@@ -228,7 +407,9 @@ class SyncService {
     );
 
     if (result.files != null && result.files!.isNotEmpty) {
-      return result.files!.first.id!;
+      final folderId = result.files!.first.id!;
+      _folderIdCache[cacheKey] = folderId;
+      return folderId;
     }
 
     // Create folder
@@ -237,7 +418,16 @@ class SyncService {
       ..mimeType = 'application/vnd.google-apps.folder'
       ..parents = [parent];
     final created = await _driveApi!.files.create(folder);
-    return created.id!;
+    final newId = created.id!;
+    _folderIdCache[cacheKey] = newId;
+
+    // Persist root folder ID if this is the Organote folder
+    if (name == 'Organote' && parent == 'root') {
+      final prefs = await SharedPreferences.getInstance();
+      await prefs.setString(_rootFolderIdKey, newId);
+    }
+
+    return newId;
   }
 
   /// Find a sub-folder by name.
@@ -326,13 +516,15 @@ class SyncService {
       }
       return utf8.decode(bytes);
     } catch (e) {
-      debugPrint('downloadFile error: $e');
+      debugPrint('[Sync] downloadFile error: $e');
       return null;
     }
   }
 
   /// Dispose and clean up.
   void dispose() {
+    stopPolling();
+    _syncDebounceTimer?.cancel();
     signOut();
     _instance = null;
   }

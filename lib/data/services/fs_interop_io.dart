@@ -104,13 +104,36 @@ class FileSystemInterop {
     return null;
   }
 
-  /// Initialize notes/ and templates/ directories.
+  /// Initialize notes/, templates/, and assets/ directories.
   static Future<void> initDirectories() async {
     if (_rootPath == null) return;
     final notesDir = Directory(p.join(_rootPath!, 'notes'));
     final templatesDir = Directory(p.join(_rootPath!, 'templates'));
+    final assetsDir = Directory(p.join(_rootPath!, 'assets'));
     if (!notesDir.existsSync()) await notesDir.create(recursive: true);
     if (!templatesDir.existsSync()) await templatesDir.create(recursive: true);
+    if (!assetsDir.existsSync()) await assetsDir.create(recursive: true);
+  }
+
+  /// Get the absolute path for a relative path (e.g. "assets/img.jpg").
+  static String? getAbsolutePath(String relativePath) {
+    if (_rootPath == null) return null;
+    return p.join(_rootPath!, relativePath);
+  }
+
+  /// Write binary content to a file path.
+  static Future<void> writeBytes(String path, List<int> bytes) async {
+    if (_rootPath == null) throw StateError('No root path configured');
+    final file = File(p.join(_rootPath!, path));
+    await file.parent.create(recursive: true);
+    await file.writeAsBytes(bytes);
+  }
+
+  /// Read binary content from a file path.
+  static Future<List<int>> readBytes(String path) async {
+    if (_rootPath == null) throw StateError('No root path configured');
+    final file = File(p.join(_rootPath!, path));
+    return await file.readAsBytes();
   }
 
   /// Write content to a file path (e.g., "notes/personal/myfile.md").

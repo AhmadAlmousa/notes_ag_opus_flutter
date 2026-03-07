@@ -81,10 +81,46 @@ class NoteRepository {
     await _updateSearchIndex(note);
   }
 
-  /// Deletes a note.
+  /// Soft-deletes a note — moves it to the recycle bin (7-day retention).
   Future<void> delete(String category, String filename) async {
+    // Save content to trash before deleting
+    final content = _storage.getNote(category, filename);
+    if (content != null) {
+      await _storage.addToTrash(category, filename, content);
+    }
     await _storage.deleteNote(category, filename);
     _cache.remove('$category/$filename');
+  }
+
+  /// Gets all trashed notes.
+  List<Map<String, dynamic>> getTrash() {
+    final trash = _storage.getTrash();
+    return trash.entries.map((e) {
+      final data = e.value;
+      return {
+        'key': e.key,
+        'category': data['category'],
+        'filename': data['filename'],
+        'deletedAt': DateTime.tryParse(data['deletedAt'] as String? ?? ''),
+        'expiresAt': DateTime.tryParse(data['expiresAt'] as String? ?? ''),
+      };
+    }).toList();
+  }
+
+  /// Restores a note from the trash.
+  Future<void> restoreFromTrash(String key) async {
+    await _storage.restoreFromTrash(key);
+    clearCache();
+  }
+
+  /// Permanently removes a note from the trash.
+  Future<void> permanentlyDelete(String key) async {
+    await _storage.removeFromTrash(key);
+  }
+
+  /// Purges notes older than 7 days from the trash.
+  Future<int> purgeExpiredTrash() async {
+    return await _storage.purgeExpiredTrash();
   }
 
   /// Creates a new note for a template.
@@ -194,6 +230,9 @@ class NoteRepository {
       await _storage.deleteNote(oldName, note.filename);
       _cache.remove('$oldName/${note.filename}');
     }
+    // Persist the category list change
+    await _storage.removeCategory(oldName);
+    await _storage.addCategory(newName);
   }
 
   /// Deletes a category and all its notes.
@@ -202,6 +241,8 @@ class NoteRepository {
     for (final note in notes) {
       await delete(name, note.filename);
     }
+    // Remove from category list
+    await _storage.removeCategory(name);
   }
 
   Note? _parseNote(String category, String filename, String content) {

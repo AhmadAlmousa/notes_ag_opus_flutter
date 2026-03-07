@@ -9,6 +9,7 @@ import 'dropdown_field_input.dart';
 import 'ip_field_input.dart';
 import 'regex_field_input.dart';
 import 'custom_label_field_input.dart';
+import 'image_field_input.dart';
 
 /// Generic field input widget that delegates to specific field types.
 class FieldInputWidget extends StatelessWidget {
@@ -124,6 +125,14 @@ class FieldInputWidget extends StatelessWidget {
           textValue: textVal,
           onLabelChanged: (l) => onChanged({'label': l, 'value': (value is Map ? value['value']?.toString() : null) ?? ''}),
           onValueChanged: (v) => onChanged({'label': (value is Map ? value['label']?.toString() : null) ?? '', 'value': v}),
+          hasError: hasError,
+        );
+
+      case FieldType.image:
+        return ImageFieldInput(
+          field: field,
+          value: value,
+          onChanged: onChanged,
           hasError: hasError,
         );
     }

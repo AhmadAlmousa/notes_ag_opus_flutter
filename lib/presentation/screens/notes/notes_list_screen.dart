@@ -6,7 +6,7 @@ import '../../../core/providers.dart';
 import '../../../core/theme/app_theme.dart';
 import '../../../data/models/note.dart';
 import '../../widgets/common/note_card.dart';
-import '../../widgets/layout/app_scaffold.dart';
+
 
 /// Notes list screen.
 class NotesListScreen extends ConsumerStatefulWidget {
@@ -90,8 +90,7 @@ class _NotesListScreenState extends ConsumerState<NotesListScreen>
 
     final theme = Theme.of(context);
 
-    return AppScaffold(
-      currentIndex: 1,
+    return Scaffold(
       body: _isLoading
           ? const Center(child: CircularProgressIndicator())
           : CustomScrollView(

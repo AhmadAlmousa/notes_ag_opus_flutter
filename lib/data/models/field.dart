@@ -11,6 +11,7 @@ enum FieldType {
   password,
   regex,
   customLabel,
+  image,
 }
 
 /// Extension to get field type from string.
@@ -39,6 +40,8 @@ extension FieldTypeExtension on FieldType {
         return 'Regex';
       case FieldType.customLabel:
         return 'Custom Label';
+      case FieldType.image:
+        return 'Image';
     }
   }
 
@@ -66,6 +69,8 @@ extension FieldTypeExtension on FieldType {
         return 'rule';
       case FieldType.customLabel:
         return 'label';
+      case FieldType.image:
+        return 'image';
     }
   }
 
@@ -96,6 +101,7 @@ class Field {
     required this.type,
     required this.label,
     this.required = false,
+    this.emoji,
     this.options,
   });
 
@@ -103,6 +109,7 @@ class Field {
   final FieldType type;
   final String label;
   final bool required;
+  final String? emoji;
   final FieldOptions? options;
 
   /// Creates a Field from a YAML map.
@@ -112,6 +119,7 @@ class Field {
       type: FieldTypeExtension.fromString(yaml['type'] as String? ?? 'text'),
       label: yaml['label'] as String? ?? yaml['id'] as String? ?? '',
       required: yaml['required'] as bool? ?? false,
+      emoji: yaml['emoji'] as String?,
       options: FieldOptions.fromYaml(yaml),
     );
   }
@@ -126,6 +134,9 @@ class Field {
     if (required) {
       map['required'] = required;
     }
+    if (emoji != null) {
+      map['emoji'] = emoji;
+    }
     if (options != null) {
       map.addAll(options!.toYaml());
     }
@@ -137,6 +148,7 @@ class Field {
     FieldType? type,
     String? label,
     bool? required,
+    String? emoji,
     FieldOptions? options,
   }) {
     return Field(
@@ -144,7 +156,20 @@ class Field {
       type: type ?? this.type,
       label: label ?? this.label,
       required: required ?? this.required,
+      emoji: emoji ?? this.emoji,
       options: options ?? this.options,
+    );
+  }
+
+  /// Returns a copy with `emoji` explicitly cleared to null.
+  Field clearEmoji() {
+    return Field(
+      id: id,
+      type: type,
+      label: label,
+      required: required,
+      emoji: null,
+      options: options,
     );
   }
 }
@@ -159,6 +184,7 @@ class FieldOptions {
     this.calendarMode,
     this.regexPattern,
     this.regexHint,
+    this.isTextbox,
   });
 
   /// Minimum value for number fields.
@@ -181,6 +207,9 @@ class FieldOptions {
 
   /// User-facing description of valid format for regex fields.
   final String? regexHint;
+
+  /// Whether this text field should render as a multiline textbox.
+  final bool? isTextbox;
 
   factory FieldOptions.fromYaml(Map<String, dynamic> yaml) {
     List<String>? dropdownOpts;
@@ -205,6 +234,7 @@ class FieldOptions {
       calendarMode: calMode,
       regexPattern: yaml['regex_pattern'] as String?,
       regexHint: yaml['regex_hint'] as String?,
+      isTextbox: yaml['textbox'] as bool?,
     );
   }
 
@@ -217,6 +247,7 @@ class FieldOptions {
     if (calendarMode != null) map['calendar'] = calendarMode!.name;
     if (regexPattern != null) map['regex_pattern'] = regexPattern;
     if (regexHint != null) map['regex_hint'] = regexHint;
+    if (isTextbox == true) map['textbox'] = true;
     return map;
   }
 }

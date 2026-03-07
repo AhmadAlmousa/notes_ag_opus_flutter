@@ -86,16 +86,23 @@ class _TextFieldInputState extends State<TextFieldInput> {
 
   @override
   Widget build(BuildContext context) {
+    final isMultiline = widget.field.options?.isTextbox == true;
+
     return TextFormField(
       controller: _controller,
       onChanged: widget.onChanged,
-      keyboardType: widget.keyboardType,
+      keyboardType: isMultiline ? TextInputType.multiline : widget.keyboardType,
+      maxLines: isMultiline ? null : 1,
+      minLines: isMultiline ? 3 : 1,
       maxLength: widget.maxLength,
       validator: _validate,
       autovalidateMode: AutovalidateMode.onUserInteraction,
+      textInputAction: isMultiline ? TextInputAction.newline : null,
       decoration: InputDecoration(
         labelText: widget.field.label,
-        hintText: 'Enter ${widget.field.label.toLowerCase()}',
+        hintText: isMultiline
+            ? 'Enter text (supports multiple lines)'
+            : 'Enter ${widget.field.label.toLowerCase()}',
         prefixIcon: widget.prefixIcon != null
             ? Icon(widget.prefixIcon)
             : null,
@@ -107,6 +114,7 @@ class _TextFieldInputState extends State<TextFieldInput> {
               )
             : null,
         counterText: '',
+        alignLabelWithHint: isMultiline,
       ),
     );
   }

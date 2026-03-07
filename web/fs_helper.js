@@ -95,26 +95,48 @@
 
         // Reconnect to previously saved FSA directory
         reconnect: async function () {
-            const handle = await this._loadHandle();
-            if (!handle) return null;
+            try {
+                const handle = await this._loadHandle();
+                if (!handle) return null;
 
-            // Verify permission
-            const perm = await handle.queryPermission({ mode: 'readwrite' });
-            if (perm === 'granted') {
-                this._rootHandle = handle;
-                this._storageType = 'fsa';
-                return handle.name;
+                // Verify permission — may throw if handle is from different origin
+                let perm;
+                try {
+                    perm = await handle.queryPermission({ mode: 'readwrite' });
+                } catch (e) {
+                    console.warn('[organoteFS] queryPermission failed:', e);
+                    return null;
+                }
+
+                if (perm === 'granted') {
+                    this._rootHandle = handle;
+                    this._storageType = 'fsa';
+                    return handle.name;
+                }
+
+                // requestPermission requires a user gesture — add a timeout so
+                // the app doesn't hang forever when called from init code
+                try {
+                    const reqPerm = await Promise.race([
+                        handle.requestPermission({ mode: 'readwrite' }),
+                        new Promise((_, reject) =>
+                            setTimeout(() => reject(new Error('Permission timeout')), 5000)
+                        )
+                    ]);
+                    if (reqPerm === 'granted') {
+                        this._rootHandle = handle;
+                        this._storageType = 'fsa';
+                        return handle.name;
+                    }
+                } catch (e) {
+                    console.warn('[organoteFS] requestPermission timed out or denied:', e);
+                }
+
+                return null;
+            } catch (e) {
+                console.warn('[organoteFS] reconnect error:', e);
+                return null;
             }
-
-            // Try requesting permission
-            const reqPerm = await handle.requestPermission({ mode: 'readwrite' });
-            if (reqPerm === 'granted') {
-                this._rootHandle = handle;
-                this._storageType = 'fsa';
-                return handle.name;
-            }
-
-            return null;
         },
 
         // Get current storage type  

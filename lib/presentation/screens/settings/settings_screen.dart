@@ -3,6 +3,7 @@ import 'package:flutter/foundation.dart' show kIsWeb;
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:file_picker/file_picker.dart';
 import 'package:permission_handler/permission_handler.dart';
+import 'package:go_router/go_router.dart';
 
 import '../../../core/compliance_checker.dart';
 import '../../../data/services/fs_interop.dart';
@@ -11,7 +12,7 @@ import '../../../core/providers.dart';
 import '../../../core/export_import_service.dart';
 import '../../../core/theme/app_theme.dart';
 import '../../widgets/dialogs/sync_conflict_dialog.dart';
-import '../../widgets/layout/app_scaffold.dart';
+
 
 /// Settings screen.
 class SettingsScreen extends ConsumerStatefulWidget {
@@ -44,8 +45,7 @@ class _SettingsScreenState extends ConsumerState<SettingsScreen>
   Widget build(BuildContext context) {
     final theme = Theme.of(context);
 
-    return AppScaffold(
-      currentIndex: 3,
+    return Scaffold(
       body: FadeTransition(
         opacity: _animationController,
         child: CustomScrollView(
@@ -93,6 +93,55 @@ class _SettingsScreenState extends ConsumerState<SettingsScreen>
                       Icons.palette_outlined,
                       [
                         _buildThemeSetting(context),
+                        SwitchListTile(
+                          title: const Text('Show Passwords'),
+                          subtitle: const Text('Reveal password fields globally'),
+                          value: ref.watch(showPasswordsProvider),
+                          onChanged: (_) => ref.read(showPasswordsProvider.notifier).toggle(),
+                          secondary: const Icon(Icons.visibility),
+                          dense: true,
+                        ),
+                      ],
+                    ),
+
+                    const SizedBox(height: 16),
+
+                    // Language section
+                    _buildSection(
+                      context,
+                      'Language',
+                      Icons.language,
+                      [
+                        Padding(
+                          padding: const EdgeInsets.fromLTRB(16, 0, 16, 16),
+                          child: Center(
+                            child: SegmentedButton<String>(
+                              selected: {
+                                ref.watch(localeProvider)?.languageCode ?? 'en',
+                              },
+                              segments: const [
+                                ButtonSegment(
+                                  value: 'en',
+                                  label: Text('English'),
+                                ),
+                                ButtonSegment(
+                                  value: 'ar',
+                                  label: Text('العربية'),
+                                ),
+                              ],
+                              onSelectionChanged: (selection) {
+                                final code = selection.first;
+                                setLocale(ref, Locale(code));
+                              },
+                              style: ButtonStyle(
+                                visualDensity: VisualDensity.compact,
+                                textStyle: WidgetStateProperty.all(
+                                  const TextStyle(fontSize: 13),
+                                ),
+                              ),
+                            ),
+                          ),
+                        ),
                       ],
                     ),
 
@@ -118,6 +167,48 @@ class _SettingsScreenState extends ConsumerState<SettingsScreen>
                         ),
                       ],
                     ),
+
+                    const SizedBox(height: 16),
+
+                    // Recycle Bin section
+                    Builder(builder: (context) {
+                      final trashItems = ref.read(noteRepoProvider).getTrash();
+                      return _buildSection(
+                        context,
+                        'Recycle Bin',
+                        Icons.delete_outline,
+                        [
+                          ListTile(
+                            dense: true,
+                            leading: Icon(
+                              Icons.restore_from_trash,
+                              color: trashItems.isEmpty
+                                  ? theme.colorScheme.onSurfaceVariant
+                                  : Colors.orange,
+                              size: 22,
+                            ),
+                            title: Text(
+                              trashItems.isEmpty
+                                  ? 'No deleted notes'
+                                  : '${trashItems.length} deleted note${trashItems.length != 1 ? 's' : ''}',
+                              style: theme.textTheme.bodyMedium,
+                            ),
+                            subtitle: trashItems.isEmpty
+                                ? null
+                                : Text(
+                                    'Auto-purged after 7 days',
+                                    style: theme.textTheme.bodySmall?.copyWith(
+                                      color: theme.colorScheme.onSurfaceVariant,
+                                    ),
+                                  ),
+                            trailing: TextButton(
+                              onPressed: () => context.push('/recycle-bin'),
+                              child: const Text('View'),
+                            ),
+                          ),
+                        ],
+                      );
+                    }),
 
                     const SizedBox(height: 16),
 
@@ -348,34 +439,41 @@ class _SettingsScreenState extends ConsumerState<SettingsScreen>
 
     return Padding(
       padding: const EdgeInsets.fromLTRB(16, 0, 16, 16),
-      child: Row(
-        children: [
-          Expanded(
-            child: Text(
-              'Theme',
-              style: theme.textTheme.bodyMedium,
-            ),
-          ),
-          SegmentedButton<ThemeMode>(
-            selected: {ref.watch(themeModeProvider)},
+      child: Center(
+        child: SegmentedButton<String>(
+            selected: {
+              ref.watch(isOledModeProvider) ? 'oled' : ref.watch(themeModeProvider).name,
+            },
             onSelectionChanged: (selection) {
-              ref.read(themeModeProvider.notifier).setThemeMode(selection.first);
+              final value = selection.first;
+              if (value == 'oled') {
+                ref.read(themeModeProvider.notifier).setOledMode();
+              } else {
+                ref.read(themeModeProvider.notifier).setThemeMode(
+                  ThemeMode.values.firstWhere((m) => m.name == value),
+                );
+              }
             },
             segments: const [
               ButtonSegment(
-                value: ThemeMode.system,
+                value: 'system',
                 icon: Icon(Icons.brightness_auto, size: 18),
                 label: Text('Auto'),
               ),
               ButtonSegment(
-                value: ThemeMode.light,
+                value: 'light',
                 icon: Icon(Icons.light_mode, size: 18),
                 label: Text('Light'),
               ),
               ButtonSegment(
-                value: ThemeMode.dark,
+                value: 'dark',
                 icon: Icon(Icons.dark_mode, size: 18),
                 label: Text('Dark'),
+              ),
+              ButtonSegment(
+                value: 'oled',
+                icon: Icon(Icons.brightness_1, size: 18),
+                label: Text('OLED'),
               ),
             ],
             style: ButtonStyle(
@@ -385,8 +483,135 @@ class _SettingsScreenState extends ConsumerState<SettingsScreen>
               ),
             ),
           ),
-        ],
       ),
+    );
+  }
+
+  void _showRecycleBinDialog(BuildContext context) {
+    showDialog(
+      context: context,
+      builder: (ctx) {
+        return StatefulBuilder(builder: (ctx, setDialogState) {
+          final trashItems = ref.read(noteRepoProvider).getTrash();
+          final theme = Theme.of(ctx);
+
+          return AlertDialog(
+            title: Row(
+              children: [
+                const Icon(Icons.delete_outline, size: 22),
+                const SizedBox(width: 8),
+                const Text('Recycle Bin'),
+                const Spacer(),
+                if (trashItems.isNotEmpty)
+                  TextButton(
+                    onPressed: () async {
+                      for (final item in trashItems) {
+                        await ref.read(noteRepoProvider).permanentlyDelete(
+                            item['key'] as String);
+                      }
+                      setDialogState(() {});
+                      setState(() {});
+                    },
+                    child: const Text('Empty All',
+                        style: TextStyle(color: Colors.red, fontSize: 12)),
+                  ),
+              ],
+            ),
+            content: SizedBox(
+              width: 400,
+              height: 400,
+              child: trashItems.isEmpty
+                  ? Center(
+                      child: Column(
+                        mainAxisSize: MainAxisSize.min,
+                        children: [
+                          Icon(Icons.check_circle_outline,
+                              size: 48,
+                              color: theme.colorScheme.onSurfaceVariant),
+                          const SizedBox(height: 12),
+                          Text('Recycle bin is empty',
+                              style: theme.textTheme.bodyMedium),
+                        ],
+                      ),
+                    )
+                  : ListView.builder(
+                      itemCount: trashItems.length,
+                      itemBuilder: (ctx, index) {
+                        final item = trashItems[index];
+                        final category = item['category'] as String? ?? '';
+                        final filename = item['filename'] as String? ?? '';
+                        final deletedAt = item['deletedAt'] as DateTime?;
+                        final expiresAt = item['expiresAt'] as DateTime?;
+
+                        final daysLeft = expiresAt != null
+                            ? expiresAt
+                                .difference(DateTime.now().toUtc())
+                                .inDays
+                            : 0;
+
+                        return Card(
+                          margin: const EdgeInsets.only(bottom: 8),
+                          child: ListTile(
+                            dense: true,
+                            leading: Icon(Icons.description_outlined,
+                                color: theme.colorScheme.onSurfaceVariant),
+                            title: Text(
+                              filename.replaceAll('.md', ''),
+                              style: theme.textTheme.bodyMedium,
+                              overflow: TextOverflow.ellipsis,
+                            ),
+                            subtitle: Text(
+                              '$category • ${daysLeft}d left',
+                              style: theme.textTheme.bodySmall?.copyWith(
+                                color: daysLeft <= 1
+                                    ? Colors.red
+                                    : theme.colorScheme.onSurfaceVariant,
+                              ),
+                            ),
+                            trailing: Row(
+                              mainAxisSize: MainAxisSize.min,
+                              children: [
+                                IconButton(
+                                  icon: const Icon(Icons.restore, size: 20),
+                                  tooltip: 'Restore',
+                                  onPressed: () async {
+                                    await ref
+                                        .read(noteRepoProvider)
+                                        .restoreFromTrash(
+                                            item['key'] as String);
+                                    setDialogState(() {});
+                                    setState(() {});
+                                  },
+                                ),
+                                IconButton(
+                                  icon: const Icon(Icons.delete_forever,
+                                      size: 20, color: Colors.red),
+                                  tooltip: 'Delete permanently',
+                                  onPressed: () async {
+                                    await ref
+                                        .read(noteRepoProvider)
+                                        .permanentlyDelete(
+                                            item['key'] as String);
+                                    setDialogState(() {});
+                                    setState(() {});
+                                  },
+                                ),
+                              ],
+                            ),
+                          ),
+                        );
+                      },
+                    ),
+            ),
+            actions: [
+              TextButton(
+                onPressed: () => Navigator.pop(ctx),
+                child: const Text('Close'),
+              ),
+            ],
+          );
+        });
+      },
     );
   }
 

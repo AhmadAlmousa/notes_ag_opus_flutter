@@ -18,6 +18,8 @@ class FileSystemStorageService extends StorageService {
     if (_instance == null) {
       _instance = FileSystemStorageService._();
       _prefs = await SharedPreferences.getInstance();
+      // Also initialize parent StorageService._prefs so trash methods work
+      StorageService.initPrefs(_prefs!);
     }
     return _instance!;
   }
@@ -192,11 +194,30 @@ class FileSystemStorageService extends StorageService {
 
   @override
   List<String> getCategories() {
+    // Start with saved categories
     final json = _prefs?.getString(_categoriesKey);
-    if (json == null) {
-      return ['personal', 'work', 'family'];
+    final saved = json != null
+        ? List<String>.from(jsonDecode(json) as List)
+        : <String>['personal', 'work', 'family'];
+
+    // Merge categories from actual note paths in the cache
+    final notes = getNotes();
+    final fromNotes = <String>{};
+    for (final key in notes.keys) {
+      final parts = key.split('/');
+      if (parts.length >= 2) {
+        fromNotes.add(parts.first);
+      }
     }
-    return List<String>.from(jsonDecode(json) as List);
+
+    // Combine both, preserving saved order, appending new filesystem categories
+    final result = [...saved];
+    for (final cat in fromNotes) {
+      if (!result.contains(cat)) {
+        result.add(cat);
+      }
+    }
+    return result;
   }
 
   Future<void> _updateCategories(String category) async {
@@ -210,6 +231,18 @@ class FileSystemStorageService extends StorageService {
   @override
   Future<void> addCategory(String category) async {
     await _updateCategories(category);
+  }
+
+  @override
+  Future<void> saveCategories(List<String> categories) async {
+    await _prefs?.setString(_categoriesKey, jsonEncode(categories));
+  }
+
+  @override
+  Future<void> removeCategory(String category) async {
+    final categories = getCategories();
+    categories.remove(category);
+    await saveCategories(categories);
   }
 
   // ─── Search Index ───

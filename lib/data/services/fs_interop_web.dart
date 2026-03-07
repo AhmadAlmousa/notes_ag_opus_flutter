@@ -1,3 +1,4 @@
+import 'dart:convert';
 import 'dart:js_interop';
 
 /// Dart interop bindings for the organoteFS JavaScript helper.
@@ -193,6 +194,23 @@ class FileSystemInterop {
   static Future<String> setRootPath(String path) async {
     // No-op on web — path-based storage is not used
     return path.split('/').last;
+  }
+
+  /// Get an absolute path — not applicable on web, returns null.
+  static String? getAbsolutePath(String relativePath) {
+    return null;
+  }
+
+  /// Write binary content as base64-encoded text on web.
+  static Future<void> writeBytes(String path, List<int> bytes) async {
+    final base64Content = base64Encode(bytes);
+    await writeFile(path, base64Content);
+  }
+
+  /// Read binary content (base64-decoded) on web.
+  static Future<List<int>> readBytes(String path) async {
+    final content = await readFile(path);
+    return base64Decode(content);
   }
 
   /// Change directory - native only, no-op on web.

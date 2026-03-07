@@ -5,7 +5,7 @@ import 'package:go_router/go_router.dart';
 import '../../../core/providers.dart';
 import '../../../core/theme/app_theme.dart';
 import '../../../data/models/template.dart';
-import '../../widgets/layout/app_scaffold.dart';
+
 
 /// Template list screen.
 class TemplateListScreen extends ConsumerStatefulWidget {
@@ -18,7 +18,8 @@ class TemplateListScreen extends ConsumerStatefulWidget {
 class _TemplateListScreenState extends ConsumerState<TemplateListScreen>
     with SingleTickerProviderStateMixin, RouteAware {
   late AnimationController _animationController;
-  List<Template> _templates = [];
+  List<Template> _inUseTemplates = [];
+  List<Template> _unusedTemplates = [];
   bool _isLoading = true;
 
   @override
@@ -46,8 +47,22 @@ class _TemplateListScreenState extends ConsumerState<TemplateListScreen>
   Future<void> _loadData() async {
     // Clear cache to ensure fresh data
     ref.read(templateRepoProvider).clearCache();
+    final templates = ref.read(templateRepoProvider).getAll();
+
+    // Determine which templates are in use by checking notes
+    final notes = ref.read(noteRepoProvider).getAll();
+    final usedTemplateIds = <String>{};
+    for (final note in notes) {
+      usedTemplateIds.add(note.templateId);
+    }
+
     setState(() {
-      _templates = ref.read(templateRepoProvider).getAll();
+      _inUseTemplates = templates
+          .where((t) => usedTemplateIds.contains(t.templateId))
+          .toList();
+      _unusedTemplates = templates
+          .where((t) => !usedTemplateIds.contains(t.templateId))
+          .toList();
       _isLoading = false;
     });
     _animationController.forward(from: 0);
@@ -93,8 +108,7 @@ class _TemplateListScreenState extends ConsumerState<TemplateListScreen>
   Widget build(BuildContext context) {
     final theme = Theme.of(context);
 
-    return AppScaffold(
-      currentIndex: 2,
+    return Scaffold(
       floatingActionButton: FloatingActionButton(
         onPressed: () async {
           await context.push('/templates/new');
@@ -127,7 +141,7 @@ class _TemplateListScreenState extends ConsumerState<TemplateListScreen>
                           ),
                           const SizedBox(height: 4),
                           Text(
-                            '${_templates.length} template${_templates.length != 1 ? 's' : ''} created',
+                            '${_inUseTemplates.length + _unusedTemplates.length} template${(_inUseTemplates.length + _unusedTemplates.length) != 1 ? 's' : ''} created',
                             style: theme.textTheme.bodySmall?.copyWith(
                               color: theme.colorScheme.onSurfaceVariant,
                             ),
@@ -137,41 +151,115 @@ class _TemplateListScreenState extends ConsumerState<TemplateListScreen>
                     ),
                   ),
 
-                  // Template list (not grid)
-                  if (_templates.isEmpty)
+                  // Template list — split into In Use / Unused
+                  if (_inUseTemplates.isEmpty && _unusedTemplates.isEmpty)
                     SliverToBoxAdapter(
                       child: _buildEmptyState(context),
                     )
-                  else
-                    SliverPadding(
-                      padding: const EdgeInsets.fromLTRB(20, 0, 20, 100),
-                      sliver: SliverList(
-                        delegate: SliverChildBuilderDelegate(
-                          (context, index) {
-                            return _buildAnimatedItem(
-                              index,
-                              Padding(
-                                padding: const EdgeInsets.only(bottom: 12),
-                                child: _TemplateListTile(
-                                  template: _templates[index],
-                                  onTap: () async {
-                                    await context.push(
-                                      '/templates/${_templates[index].templateId}',
-                                    );
-                                    _loadData();
-                                  },
-                                  onCreateNote: () => context.push(
-                                    '/new-note/${_templates[index].templateId}',
-                                  ),
-                                  onDelete: () => _deleteTemplate(_templates[index]),
+                  else ...[
+                    // In Use section
+                    if (_inUseTemplates.isNotEmpty) ...[
+                      SliverToBoxAdapter(
+                        child: Padding(
+                          padding: const EdgeInsets.fromLTRB(20, 8, 20, 8),
+                          child: Row(
+                            children: [
+                              Icon(Icons.check_circle, size: 16,
+                                  color: Colors.green.shade600),
+                              const SizedBox(width: 6),
+                              Text(
+                                'In Use (${_inUseTemplates.length})',
+                                style: theme.textTheme.labelLarge?.copyWith(
+                                  fontWeight: FontWeight.w600,
+                                  color: Colors.green.shade600,
                                 ),
                               ),
-                            );
-                          },
-                          childCount: _templates.length,
+                            ],
+                          ),
                         ),
                       ),
-                    ),
+                      SliverPadding(
+                        padding: const EdgeInsets.fromLTRB(20, 0, 20, 16),
+                        sliver: SliverList(
+                          delegate: SliverChildBuilderDelegate(
+                            (context, index) {
+                              return _buildAnimatedItem(
+                                index,
+                                Padding(
+                                  padding: const EdgeInsets.only(bottom: 12),
+                                  child: _TemplateListTile(
+                                    template: _inUseTemplates[index],
+                                    onTap: () async {
+                                      await context.push(
+                                        '/templates/${_inUseTemplates[index].templateId}',
+                                      );
+                                      _loadData();
+                                    },
+                                    onCreateNote: () => context.push(
+                                      '/new-note/${_inUseTemplates[index].templateId}',
+                                    ),
+                                    onDelete: () => _deleteTemplate(_inUseTemplates[index]),
+                                  ),
+                                ),
+                              );
+                            },
+                            childCount: _inUseTemplates.length,
+                          ),
+                        ),
+                      ),
+                    ],
+                    // Unused section
+                    if (_unusedTemplates.isNotEmpty) ...[
+                      SliverToBoxAdapter(
+                        child: Padding(
+                          padding: const EdgeInsets.fromLTRB(20, 8, 20, 8),
+                          child: Row(
+                            children: [
+                              Icon(Icons.remove_circle_outline, size: 16,
+                                  color: theme.colorScheme.onSurfaceVariant),
+                              const SizedBox(width: 6),
+                              Text(
+                                'Unused (${_unusedTemplates.length})',
+                                style: theme.textTheme.labelLarge?.copyWith(
+                                  fontWeight: FontWeight.w600,
+                                  color: theme.colorScheme.onSurfaceVariant,
+                                ),
+                              ),
+                            ],
+                          ),
+                        ),
+                      ),
+                      SliverPadding(
+                        padding: const EdgeInsets.fromLTRB(20, 0, 20, 100),
+                        sliver: SliverList(
+                          delegate: SliverChildBuilderDelegate(
+                            (context, index) {
+                              return _buildAnimatedItem(
+                                _inUseTemplates.length + index,
+                                Padding(
+                                  padding: const EdgeInsets.only(bottom: 12),
+                                  child: _TemplateListTile(
+                                    template: _unusedTemplates[index],
+                                    onTap: () async {
+                                      await context.push(
+                                        '/templates/${_unusedTemplates[index].templateId}',
+                                      );
+                                      _loadData();
+                                    },
+                                    onCreateNote: () => context.push(
+                                      '/new-note/${_unusedTemplates[index].templateId}',
+                                    ),
+                                    onDelete: () => _deleteTemplate(_unusedTemplates[index]),
+                                  ),
+                                ),
+                              );
+                            },
+                            childCount: _unusedTemplates.length,
+                          ),
+                        ),
+                      ),
+                    ],
+                  ],
                 ],
               ),
             ),

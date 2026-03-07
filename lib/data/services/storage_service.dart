@@ -17,12 +17,19 @@ class StorageService {
     return _instance!;
   }
 
+  /// Initialize the shared preferences from a subclass instance.
+  /// This ensures trash and settings methods work when using subclasses.
+  static void initPrefs(SharedPreferences prefs) {
+    _prefs = prefs;
+  }
+
   /// Storage keys.
   static const String _templatesKey = 'organote_templates';
   static const String _notesKey = 'organote_notes';
   static const String _categoriesKey = 'organote_categories';
   static const String _settingsKey = 'organote_settings';
   static const String _searchIndexKey = 'organote_search_index';
+  static const String _trashKey = 'organote_trash';
 
   // Templates
   /// Gets all templates as a map of templateId -> markdown content.
@@ -119,6 +126,18 @@ class StorageService {
     await _updateCategories(category);
   }
 
+  /// Saves the full category list (used by rename/delete).
+  Future<void> saveCategories(List<String> categories) async {
+    await _prefs?.setString(_categoriesKey, jsonEncode(categories));
+  }
+
+  /// Removes a category from the list.
+  Future<void> removeCategory(String category) async {
+    final categories = getCategories();
+    categories.remove(category);
+    await saveCategories(categories);
+  }
+
   // Search Index
   /// Gets the search index.
   Map<String, dynamic> getSearchIndex() {
@@ -171,5 +190,72 @@ class StorageService {
   /// No-op for SharedPreferences-based storage; overridden by FileSystemStorageService.
   Future<void> refreshCaches() async {
     // No-op — SharedPreferences is always in sync
+  }
+
+  // ─── Trash / Recycle Bin ───
+
+  /// Gets all trashed items as a map of "category/filename" → {content, deletedAt, expiresAt}.
+  Map<String, Map<String, dynamic>> getTrash() {
+    final json = _prefs?.getString(_trashKey);
+    if (json == null) return {};
+    final raw = jsonDecode(json) as Map;
+    return raw.map((k, v) =>
+        MapEntry(k as String, Map<String, dynamic>.from(v as Map)));
+  }
+
+  /// Moves a note to the trash (soft delete).
+  Future<void> addToTrash(
+      String category, String filename, String content) async {
+    final trash = getTrash();
+    final now = DateTime.now().toUtc();
+    trash['$category/$filename'] = {
+      'content': content,
+      'category': category,
+      'filename': filename,
+      'deletedAt': now.toIso8601String(),
+      'expiresAt': now.add(const Duration(days: 7)).toIso8601String(),
+    };
+    await _prefs?.setString(_trashKey, jsonEncode(trash));
+  }
+
+  /// Restores a note from the trash back to active notes.
+  Future<void> restoreFromTrash(String key) async {
+    final trash = getTrash();
+    final item = trash[key];
+    if (item == null) return;
+    await saveNote(
+        item['category'] as String, item['filename'] as String, item['content'] as String);
+    trash.remove(key);
+    await _prefs?.setString(_trashKey, jsonEncode(trash));
+  }
+
+  /// Permanently removes a note from the trash.
+  Future<void> removeFromTrash(String key) async {
+    final trash = getTrash();
+    trash.remove(key);
+    await _prefs?.setString(_trashKey, jsonEncode(trash));
+  }
+
+  /// Alias for removeFromTrash — used by the RecycleBinScreen.
+  Future<void> permanentlyDeleteFromTrash(String key) => removeFromTrash(key);
+
+  /// Purges items older than 7 days from the trash.
+  Future<int> purgeExpiredTrash() async {
+    final trash = getTrash();
+    final now = DateTime.now().toUtc();
+    final keysToRemove = <String>[];
+    for (final entry in trash.entries) {
+      final expiresAt = DateTime.tryParse(entry.value['expiresAt'] as String? ?? '');
+      if (expiresAt != null && now.isAfter(expiresAt)) {
+        keysToRemove.add(entry.key);
+      }
+    }
+    for (final key in keysToRemove) {
+      trash.remove(key);
+    }
+    if (keysToRemove.isNotEmpty) {
+      await _prefs?.setString(_trashKey, jsonEncode(trash));
+    }
+    return keysToRemove.length;
   }
 }

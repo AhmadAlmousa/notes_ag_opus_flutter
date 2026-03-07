@@ -157,6 +157,9 @@ class _TemplateBuilderScreenState extends ConsumerState<TemplateBuilderScreen> {
 
     await ref.read(templateRepoProvider).save(updatedTemplate);
 
+    // Notify other screens of the change
+    ref.read(syncTriggerProvider.notifier).trigger();
+
     // Push template to cloud sync
     final syncService = ref.read(syncServiceProvider);
     syncService.pushDocument(
@@ -488,11 +491,17 @@ class _FieldCardState extends State<_FieldCard> {
                     ),
                   ),
                   const SizedBox(width: 8),
-                  Icon(
-                    _getFieldIcon(widget.field.type),
-                    color: AppTheme.primaryColor,
-                    size: 20,
-                  ),
+                  if (widget.field.emoji != null)
+                    Text(
+                      widget.field.emoji!,
+                      style: const TextStyle(fontSize: 20),
+                    )
+                  else
+                    Icon(
+                      _getFieldIcon(widget.field.type),
+                      color: AppTheme.primaryColor,
+                      size: 20,
+                    ),
                   const SizedBox(width: 12),
                   Expanded(
                     child: Column(
@@ -629,6 +638,48 @@ class _FieldCardState extends State<_FieldCard> {
           ..._buildTypeSpecificOptions(context),
 
           const SizedBox(height: 12),
+          // Emoji icon selector
+          Row(
+            children: [
+              Expanded(
+                child: Text(
+                  'Custom Emoji Icon',
+                  style: theme.textTheme.bodyMedium,
+                ),
+              ),
+              if (widget.field.emoji != null) ...[
+                Container(
+                  padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 4),
+                  decoration: BoxDecoration(
+                    color: theme.colorScheme.primaryContainer.withValues(alpha: 0.3),
+                    borderRadius: BorderRadius.circular(8),
+                  ),
+                  child: Text(
+                    widget.field.emoji!,
+                    style: const TextStyle(fontSize: 20),
+                  ),
+                ),
+                const SizedBox(width: 8),
+                IconButton(
+                  icon: const Icon(Icons.close, size: 18),
+                  onPressed: () {
+                    _updateField(widget.field.clearEmoji());
+                  },
+                  tooltip: 'Remove emoji',
+                  visualDensity: VisualDensity.compact,
+                ),
+              ],
+              IconButton(
+                icon: Icon(
+                  widget.field.emoji != null ? Icons.edit : Icons.add_reaction_outlined,
+                  size: 20,
+                ),
+                onPressed: () => _showEmojiPicker(context),
+                tooltip: 'Select emoji',
+              ),
+            ],
+          ),
+          const SizedBox(height: 4),
           SwitchListTile(
             title: const Text('Required'),
             value: widget.field.required,
@@ -864,8 +915,78 @@ class _FieldCardState extends State<_FieldCard> {
           ),
         ];
 
+      case FieldType.text:
+        return [
+          const SizedBox(height: 12),
+          SwitchListTile(
+            title: const Text('Multiline Textbox'),
+            subtitle: const Text('Render as a free-text area'),
+            value: widget.field.options?.isTextbox ?? false,
+            onChanged: (value) {
+              _updateField(widget.field.copyWith(
+                options: FieldOptions(isTextbox: value ? true : null),
+              ));
+            },
+            contentPadding: EdgeInsets.zero,
+            dense: true,
+          ),
+        ];
+
       default:
         return [];
+    }
+  }
+
+  /// Show a simple emoji picker dialog.
+  Future<void> _showEmojiPicker(BuildContext context) async {
+    // Common emojis organized in rows
+    const emojis = [
+      '📝', '📋', '📌', '📎', '🔗', '🔒', '🔑', '🔐',
+      '📧', '📞', '📱', '💻', '🖥️', '🌐', '🏠', '🏢',
+      '👤', '👥', '👨‍👩‍👧‍👦', '💳', '💰', '🏦', '🛒', '📦',
+      '⭐', '❤️', '🔥', '✅', '❌', '⚠️', '💡', '🎯',
+      '📅', '⏰', '🗓️', '📊', '📈', '🗂️', '📁', '🏷️',
+      '🚗', '✈️', '🏥', '🎓', '🍽️', '🎮', '🎵', '📸',
+    ];
+
+    final selected = await showDialog<String>(
+      context: context,
+      builder: (context) => AlertDialog(
+        title: const Text('Select Emoji Icon'),
+        content: SizedBox(
+          width: 300,
+          child: Wrap(
+            spacing: 4,
+            runSpacing: 4,
+            children: emojis.map((emoji) {
+              return InkWell(
+                onTap: () => Navigator.pop(context, emoji),
+                borderRadius: BorderRadius.circular(8),
+                child: Container(
+                  width: 44,
+                  height: 44,
+                  alignment: Alignment.center,
+                  decoration: BoxDecoration(
+                    borderRadius: BorderRadius.circular(8),
+                    color: Theme.of(context).colorScheme.surfaceContainerHighest.withValues(alpha: 0.5),
+                  ),
+                  child: Text(emoji, style: const TextStyle(fontSize: 22)),
+                ),
+              );
+            }).toList(),
+          ),
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(context),
+            child: const Text('Cancel'),
+          ),
+        ],
+      ),
+    );
+
+    if (selected != null) {
+      _updateField(widget.field.copyWith(emoji: selected));
     }
   }
 
@@ -893,6 +1014,8 @@ class _FieldCardState extends State<_FieldCard> {
         return Icons.rule;
       case FieldType.customLabel:
         return Icons.label_outline;
+      case FieldType.image:
+        return Icons.image;
     }
   }
 }

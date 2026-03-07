@@ -1,16 +1,31 @@
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
+import 'package:flutter_localizations/flutter_localizations.dart';
 
 import 'core/providers.dart';
 import 'core/router.dart';
 import 'core/theme/app_theme.dart';
 import 'data/services/fs_interop.dart';
+import 'l10n/app_localizations.dart';
 import 'presentation/screens/setup/setup_screen.dart';
 
 void main() {
   WidgetsFlutterBinding.ensureInitialized();
   runApp(const ProviderScope(child: OrganoteApp()));
 }
+
+/// Localization delegates shared across all MaterialApp instances.
+const _localizationsDelegates = [
+  AppLocalizations.delegate,
+  GlobalMaterialLocalizations.delegate,
+  GlobalWidgetsLocalizations.delegate,
+  GlobalCupertinoLocalizations.delegate,
+];
+
+const _supportedLocales = [
+  Locale('en'),
+  Locale('ar'),
+];
 
 /// Main application widget.
 class OrganoteApp extends ConsumerWidget {
@@ -26,10 +41,14 @@ class OrganoteApp extends ConsumerWidget {
         theme: AppTheme.lightTheme,
         darkTheme: AppTheme.darkTheme,
         themeMode: ThemeMode.system,
+        localizationsDelegates: _localizationsDelegates,
+        supportedLocales: _supportedLocales,
         home: const _SplashScreen(),
       ),
       error: (error, stack) => MaterialApp(
         debugShowCheckedModeBanner: false,
+        localizationsDelegates: _localizationsDelegates,
+        supportedLocales: _supportedLocales,
         home: Scaffold(
           body: Center(child: Text('Initialization error: $error')),
         ),
@@ -43,6 +62,8 @@ class OrganoteApp extends ConsumerWidget {
             theme: AppTheme.lightTheme,
             darkTheme: AppTheme.darkTheme,
             themeMode: init.themeMode,
+            localizationsDelegates: _localizationsDelegates,
+            supportedLocales: _supportedLocales,
             home: SetupScreen(
               onComplete: () async {
                 final storageType = FileSystemInterop.currentStorageType;
@@ -56,6 +77,8 @@ class OrganoteApp extends ConsumerWidget {
         }
 
         final themeMode = ref.watch(themeModeProvider);
+        final isOled = ref.watch(isOledModeProvider);
+        final locale = ref.watch(localeProvider);
 
         // Start sync in background (non-blocking)
         Future.microtask(() => initSync(ref));
@@ -64,8 +87,11 @@ class OrganoteApp extends ConsumerWidget {
           title: 'Organote',
           debugShowCheckedModeBanner: false,
           theme: AppTheme.lightTheme,
-          darkTheme: AppTheme.darkTheme,
+          darkTheme: isOled ? AppTheme.oledTheme : AppTheme.darkTheme,
           themeMode: themeMode,
+          locale: locale,
+          localizationsDelegates: _localizationsDelegates,
+          supportedLocales: _supportedLocales,
           routerConfig: AppRouter.router,
         );
       },

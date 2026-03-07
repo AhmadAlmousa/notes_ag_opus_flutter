@@ -230,6 +230,9 @@ class _NoteEditorScreenState extends ConsumerState<NoteEditorScreen> {
       updatedNote.toMarkdown(),
     );
 
+    // Notify listening screens (dashboard, notes list) to rebuild
+    ref.read(syncTriggerProvider.notifier).trigger();
+
     // Update tracking for subsequent saves
     _originalCategory = _category;
     _originalFilename = filename;
@@ -252,7 +255,20 @@ class _NoteEditorScreenState extends ConsumerState<NoteEditorScreen> {
 
     // Auto-save before leaving instead of discarding
     if (_titleController.text.trim().isNotEmpty) {
+      final oldFilename = _originalFilename;
+      final oldCategory = _originalCategory;
       await _performSave(navigate: false);
+
+      // If filename or category changed, navigate to the updated note
+      // instead of popping back to the stale viewer route
+      final newFilename = _originalFilename; // updated by _performSave
+      final newCategory = _originalCategory;
+      if (oldFilename != newFilename || oldCategory != newCategory) {
+        if (mounted) {
+          context.go('/notes/$newCategory/$newFilename');
+        }
+        return false; // Don't pop — we navigated
+      }
       return true;
     }
 

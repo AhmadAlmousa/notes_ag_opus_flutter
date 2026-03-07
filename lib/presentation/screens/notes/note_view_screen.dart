@@ -1,3 +1,7 @@
+import 'dart:convert';
+import 'dart:io';
+
+import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
@@ -9,6 +13,7 @@ import '../../../core/utils/date_utils.dart';
 import '../../../data/models/field.dart';
 import '../../../data/models/note.dart';
 import '../../../data/models/template.dart';
+import '../../../data/services/fs_interop.dart';
 
 /// Note view screen with multiple layout options.
 class NoteViewScreen extends ConsumerStatefulWidget {
@@ -177,19 +182,6 @@ class _NoteViewScreenState extends ConsumerState<NoteViewScreen>
           ),
         ),
         actions: [
-          // Share button
-          IconButton(
-            icon: const Icon(Icons.share),
-            tooltip: 'Share',
-            onPressed: _shareNote,
-          ),
-          IconButton(
-            icon: const Icon(Icons.code),
-            tooltip: 'View Source',
-            onPressed: () => context.push(
-              '/notes/${widget.category}/${widget.filename}/source',
-            ),
-          ),
           IconButton(
             icon: const Icon(Icons.edit),
             tooltip: 'Edit',
@@ -200,9 +192,30 @@ class _NoteViewScreenState extends ConsumerState<NoteViewScreen>
               _loadData();
             },
           ),
-          PopupMenuButton(
-            itemBuilder: (context) => [
-              const PopupMenuItem(
+          PopupMenuButton<String>(
+            itemBuilder: (context) => <PopupMenuEntry<String>>[
+              PopupMenuItem<String>(
+                value: 'share',
+                child: Row(
+                  children: [
+                    Icon(Icons.share, size: 20, color: Theme.of(context).colorScheme.onSurface),
+                    const SizedBox(width: 8),
+                    const Text('Share'),
+                  ],
+                ),
+              ),
+              PopupMenuItem<String>(
+                value: 'source',
+                child: Row(
+                  children: [
+                    Icon(Icons.code, size: 20, color: Theme.of(context).colorScheme.onSurface),
+                    const SizedBox(width: 8),
+                    const Text('View Source'),
+                  ],
+                ),
+              ),
+              const PopupMenuDivider(),
+              const PopupMenuItem<String>(
                 value: 'delete',
                 child: Row(
                   children: [
@@ -214,12 +227,20 @@ class _NoteViewScreenState extends ConsumerState<NoteViewScreen>
               ),
             ],
             onSelected: (value) async {
-              if (value == 'delete') {
+              if (value == 'share') {
+                _shareNote();
+              } else if (value == 'source') {
+                context.push(
+                  '/notes/${widget.category}/${widget.filename}/source',
+                );
+              } else if (value == 'delete') {
                 final confirm = await showDialog<bool>(
                   context: context,
                   builder: (context) => AlertDialog(
                     title: const Text('Delete Note?'),
-                    content: const Text('This action cannot be undone.'),
+                    content: const Text(
+                        'The note will be moved to the recycle bin '
+                        'and permanently deleted after 7 days.'),
                     actions: [
                       TextButton(
                         onPressed: () => Navigator.pop(context, false),
@@ -239,7 +260,13 @@ class _NoteViewScreenState extends ConsumerState<NoteViewScreen>
                     widget.category,
                     widget.filename,
                   );
-                  if (mounted) context.go('/notes');
+                  // Sync deletion to cloud
+                  ref.read(syncServiceProvider).pushDeletion(
+                    'notes/${widget.category}/${widget.filename}',
+                  );
+                  // Notify listening screens to rebuild
+                  ref.read(syncTriggerProvider.notifier).trigger();
+                  if (mounted) context.go('/');
                 }
               }
             },
@@ -338,6 +365,11 @@ class _NoteViewScreenState extends ConsumerState<NoteViewScreen>
             rows: List.generate(_note!.records.length, (index) {
               final record = _note!.records[index];
               return DataRow(
+                color: WidgetStateProperty.resolveWith<Color?>(
+                  (states) => index.isOdd
+                      ? theme.colorScheme.surfaceContainerHighest.withValues(alpha: 0.4)
+                      : null,
+                ),
                 cells: [
                   ...fields.map((field) {
                     String value;
@@ -402,6 +434,25 @@ class _NoteViewScreenState extends ConsumerState<NoteViewScreen>
           ],
         );
       
+      case FieldType.image:
+        return GestureDetector(
+          onTap: () => _showImageDialog(context, value),
+          child: Row(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              Icon(Icons.image, size: 16, color: AppTheme.primaryColor),
+              const SizedBox(width: 4),
+              Text(
+                'View',
+                style: TextStyle(
+                  color: AppTheme.primaryColor,
+                  fontWeight: FontWeight.w500,
+                ),
+              ),
+            ],
+          ),
+        );
+
       default:
         return Row(
           mainAxisSize: MainAxisSize.min,
@@ -823,6 +874,8 @@ class _NoteViewScreenState extends ConsumerState<NoteViewScreen>
         return Icons.rule;
       case FieldType.customLabel:
         return Icons.label_outline;
+      case FieldType.image:
+        return Icons.image;
     }
   }
 
@@ -899,6 +952,9 @@ class _NoteViewScreenState extends ConsumerState<NoteViewScreen>
           ),
         );
 
+      case FieldType.image:
+        return _ImageGallery(value: value?.toString() ?? '');
+
       default:
         return Text(
           value.toString(),
@@ -910,27 +966,29 @@ class _NoteViewScreenState extends ConsumerState<NoteViewScreen>
   }
 }
 
-class _PasswordField extends StatefulWidget {
+class _PasswordField extends ConsumerStatefulWidget {
   const _PasswordField({required this.value});
 
   final String value;
 
   @override
-  State<_PasswordField> createState() => _PasswordFieldState();
+  ConsumerState<_PasswordField> createState() => _PasswordFieldState();
 }
 
-class _PasswordFieldState extends State<_PasswordField> {
-  bool _isVisible = false;
+class _PasswordFieldState extends ConsumerState<_PasswordField> {
+  bool? _localOverride; // null = follow global setting
 
   @override
   Widget build(BuildContext context) {
     final theme = Theme.of(context);
+    final globalShow = ref.watch(showPasswordsProvider);
+    final isVisible = _localOverride ?? globalShow;
 
     return Row(
       children: [
         Expanded(
           child: Text(
-            _isVisible ? widget.value : '•' * widget.value.length.clamp(8, 16),
+            isVisible ? widget.value : '•' * widget.value.length.clamp(8, 16),
             style: theme.textTheme.bodyMedium?.copyWith(
               fontFamily: 'monospace',
               fontWeight: FontWeight.w500,
@@ -939,17 +997,17 @@ class _PasswordFieldState extends State<_PasswordField> {
         ),
         IconButton(
           icon: Icon(
-            _isVisible ? Icons.visibility_off : Icons.visibility,
+            isVisible ? Icons.visibility_off : Icons.visibility,
             size: 18,
             color: theme.colorScheme.onSurfaceVariant,
           ),
-          onPressed: () => setState(() => _isVisible = !_isVisible),
+          onPressed: () => setState(() => _localOverride = !isVisible),
           padding: EdgeInsets.zero,
           constraints: const BoxConstraints(
             minWidth: 32,
             minHeight: 32,
           ),
-          tooltip: _isVisible ? 'Hide password' : 'Show password',
+          tooltip: isVisible ? 'Hide password' : 'Show password',
         ),
       ],
     );
@@ -984,3 +1042,143 @@ class _ActionButton extends StatelessWidget {
     );
   }
 }
+
+/// Inline image gallery for cards/grid layout.
+class _ImageGallery extends StatelessWidget {
+  const _ImageGallery({required this.value});
+  final String value;
+
+  List<String> _parse() {
+    if (value.isEmpty) return [];
+    try {
+      final decoded = jsonDecode(value);
+      if (decoded is List) return decoded.cast<String>();
+    } catch (_) {}
+    return [value];
+  }
+
+  Widget _buildImage(String ref) {
+    if (ref.startsWith('http://') || ref.startsWith('https://')) {
+      return Image.network(
+        ref,
+        height: 120,
+        fit: BoxFit.cover,
+        errorBuilder: (_, __, ___) => _placeholder(),
+      );
+    }
+    final absPath = FileSystemInterop.getAbsolutePath(ref);
+    if (absPath != null && !kIsWeb) {
+      return Image.file(
+        File(absPath),
+        height: 120,
+        fit: BoxFit.cover,
+        errorBuilder: (_, __, ___) => _placeholder(),
+      );
+    }
+    return _placeholder();
+  }
+
+  Widget _placeholder() => Container(
+        height: 120,
+        width: 120,
+        color: Colors.grey.shade200,
+        child: const Icon(Icons.broken_image, color: Colors.grey),
+      );
+
+  @override
+  Widget build(BuildContext context) {
+    final images = _parse();
+    if (images.isEmpty) {
+      return Text(
+        '-',
+        style: Theme.of(context).textTheme.bodyMedium?.copyWith(
+              color: Theme.of(context).colorScheme.onSurfaceVariant,
+            ),
+      );
+    }
+
+    return SizedBox(
+      height: 120,
+      child: ListView.separated(
+        scrollDirection: Axis.horizontal,
+        itemCount: images.length,
+        separatorBuilder: (_, __) => const SizedBox(width: 8),
+        itemBuilder: (ctx, i) => GestureDetector(
+          onTap: () => _showImageDialog(ctx, jsonEncode(images), startIndex: i),
+          child: ClipRRect(
+            borderRadius: BorderRadius.circular(8),
+            child: _buildImage(images[i]),
+          ),
+        ),
+      ),
+    );
+  }
+}
+
+/// Show a fullscreen image viewer dialog.
+void _showImageDialog(BuildContext context, String value, {int startIndex = 0}) {
+  List<String> images;
+  try {
+    final decoded = jsonDecode(value);
+    images = decoded is List ? decoded.cast<String>() : [value];
+  } catch (_) {
+    images = [value];
+  }
+  if (images.isEmpty) return;
+
+  showDialog(
+    context: context,
+    builder: (ctx) {
+      return Dialog(
+        backgroundColor: Colors.black,
+        insetPadding: const EdgeInsets.all(8),
+        child: Stack(
+          children: [
+            PageView.builder(
+              controller: PageController(initialPage: startIndex),
+              itemCount: images.length,
+              itemBuilder: (_, i) {
+                final ref = images[i];
+                Widget img;
+                if (ref.startsWith('http://') || ref.startsWith('https://')) {
+                  img = Image.network(ref, fit: BoxFit.contain);
+                } else {
+                  final abs = FileSystemInterop.getAbsolutePath(ref);
+                  if (abs != null && !kIsWeb) {
+                    img = Image.file(File(abs), fit: BoxFit.contain);
+                  } else {
+                    img = const Center(
+                      child: Icon(Icons.broken_image, color: Colors.white54, size: 64),
+                    );
+                  }
+                }
+                return InteractiveViewer(child: Center(child: img));
+              },
+            ),
+            Positioned(
+              top: 4,
+              right: 4,
+              child: IconButton(
+                icon: const Icon(Icons.close, color: Colors.white),
+                onPressed: () => Navigator.pop(ctx),
+              ),
+            ),
+            if (images.length > 1)
+              Positioned(
+                bottom: 12,
+                left: 0,
+                right: 0,
+                child: Center(
+                  child: Text(
+                    '${images.length} images — swipe to navigate',
+                    style: const TextStyle(color: Colors.white54, fontSize: 12),
+                  ),
+                ),
+              ),
+          ],
+        ),
+      );
+    },
+  );
+}
+

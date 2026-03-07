@@ -9,7 +9,7 @@ import '../../../data/models/note.dart';
 import '../../../data/models/template.dart';
 import '../../widgets/common/note_card.dart';
 import '../../widgets/common/search_bar.dart' as app;
-import '../../widgets/layout/app_scaffold.dart';
+
 
 /// Dashboard home screen.
 class DashboardScreen extends ConsumerStatefulWidget {
@@ -134,9 +134,7 @@ class _DashboardScreenState extends ConsumerState<DashboardScreen>
     final theme = Theme.of(context);
     final colorScheme = theme.colorScheme;
 
-    return AppScaffold(
-      currentIndex: 0,
-      hasSettingsBadge: _hasComplianceIssues,
+    return Scaffold(
       floatingActionButton: _buildFab(context),
       body: _isLoading
           ? const Center(child: CircularProgressIndicator())

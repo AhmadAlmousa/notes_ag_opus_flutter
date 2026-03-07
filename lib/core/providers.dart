@@ -54,7 +54,8 @@ final FutureProvider<AppInit> appInitProvider = FutureProvider<AppInit>((ref) as
   StorageService storage;
   bool storageConfigured = false;
 
-  final reconnected = await FileSystemStorageService.tryReconnect();
+  final reconnected = await FileSystemStorageService.tryReconnect()
+      .timeout(const Duration(seconds: 10), onTimeout: () => false);
 
   if (reconnected) {
     final fsStorage = await FileSystemStorageService.getInstance();
@@ -137,13 +138,29 @@ final storageProvider = Provider<StorageService>((ref) {
 // Theme
 // ---------------------------------------------------------------------------
 
+/// Tracks whether OLED mode is active.
+class OledModeNotifier extends Notifier<bool> {
+  @override
+  bool build() {
+    final init = ref.read(appInitProvider);
+    return init.whenOrNull(
+      data: (data) => data.storage.getSetting<String>('themeMode') == 'oled',
+    ) ?? false;
+  }
+
+  void set(bool value) => state = value;
+}
+
+final oledModeProvider =
+    NotifierProvider<OledModeNotifier, bool>(OledModeNotifier.new);
+
 class ThemeModeNotifier extends Notifier<ThemeMode> {
   @override
   ThemeMode build() {
     final init = ref.watch(appInitProvider);
     final data = init.requireValue;
-    // Load saved preference
     final themePref = data.storage.getSetting<String>('themeMode');
+    if (themePref == 'oled') return ThemeMode.dark;
     return themePref != null
         ? ThemeMode.values.firstWhere(
             (m) => m.name == themePref,
@@ -154,8 +171,17 @@ class ThemeModeNotifier extends Notifier<ThemeMode> {
 
   Future<void> setThemeMode(ThemeMode mode) async {
     state = mode;
+    ref.read(oledModeProvider.notifier).set(false);
     final init = ref.read(appInitProvider);
     await init.requireValue.storage.setSetting('themeMode', mode.name);
+  }
+
+  /// Set OLED mode — stores 'oled' and forces dark ThemeMode.
+  Future<void> setOledMode() async {
+    state = ThemeMode.dark;
+    ref.read(oledModeProvider.notifier).set(true);
+    final init = ref.read(appInitProvider);
+    await init.requireValue.storage.setSetting('themeMode', 'oled');
   }
 
   Future<void> toggleTheme() async {
@@ -169,6 +195,74 @@ class ThemeModeNotifier extends Notifier<ThemeMode> {
 
 final themeModeProvider =
     NotifierProvider<ThemeModeNotifier, ThemeMode>(ThemeModeNotifier.new);
+
+/// Whether OLED black theme is active — reactively updated.
+final isOledModeProvider = Provider<bool>((ref) {
+  return ref.watch(oledModeProvider);
+});
+
+// ---------------------------------------------------------------------------
+// Locale
+// ---------------------------------------------------------------------------
+
+/// Tracks locale state reactively.
+class LocaleNotifier extends Notifier<Locale?> {
+  @override
+  Locale? build() {
+    final init = ref.read(appInitProvider);
+    return init.whenOrNull(
+      data: (data) {
+        final saved = data.storage.getSetting<String>('locale');
+        if (saved != null) return Locale(saved);
+        return null;
+      },
+    );
+  }
+
+  void set(Locale? locale) => state = locale;
+}
+
+final localeNotifierProvider =
+    NotifierProvider<LocaleNotifier, Locale?>(LocaleNotifier.new);
+
+/// Current locale — null means follow system.
+final localeProvider = Provider<Locale?>((ref) {
+  return ref.watch(localeNotifierProvider);
+});
+
+/// Sets the locale and persists it.
+Future<void> setLocale(dynamic ref, Locale? locale) async {
+  ref.read(localeNotifierProvider.notifier).set(locale);
+  final init = ref.read(appInitProvider);
+  if (locale != null) {
+    await init.requireValue.storage.setSetting('locale', locale.languageCode);
+  } else {
+    await init.requireValue.storage.setSetting('locale', null);
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Password Visibility
+// ---------------------------------------------------------------------------
+
+class ShowPasswordsNotifier extends Notifier<bool> {
+  @override
+  bool build() {
+    final init = ref.read(appInitProvider);
+    return init.whenOrNull(
+      data: (data) => data.storage.getSetting<bool>('showPasswords') ?? false,
+    ) ?? false;
+  }
+
+  Future<void> toggle() async {
+    state = !state;
+    final init = ref.read(appInitProvider);
+    await init.requireValue.storage.setSetting('showPasswords', state);
+  }
+}
+
+final showPasswordsProvider =
+    NotifierProvider<ShowPasswordsNotifier, bool>(ShowPasswordsNotifier.new);
 
 // ---------------------------------------------------------------------------
 // Storage info (read-only)

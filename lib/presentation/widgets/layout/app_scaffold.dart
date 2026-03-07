@@ -1,42 +1,39 @@
 import 'package:flutter/material.dart';
 import 'package:go_router/go_router.dart';
 
-/// Responsive app scaffold with bottom navigation.
+/// Persistent app scaffold with bottom navigation.
+/// Used as the shell for [StatefulShellRoute.indexedStack] in the router.
 class AppScaffold extends StatelessWidget {
   const AppScaffold({
     super.key,
-    required this.body,
-    required this.currentIndex,
-    this.floatingActionButton,
-    this.appBar,
-    this.hasSettingsBadge = false,
+    required this.navigationShell,
   });
 
-  final Widget body;
-  final int currentIndex;
-  final Widget? floatingActionButton;
-  final PreferredSizeWidget? appBar;
-  final bool hasSettingsBadge;
+  final StatefulNavigationShell navigationShell;
 
   @override
   Widget build(BuildContext context) {
     return Scaffold(
-      appBar: appBar,
-      body: SafeArea(child: body),
-      floatingActionButton: floatingActionButton,
+      body: SafeArea(child: navigationShell),
       bottomNavigationBar: _BottomNavBar(
-        currentIndex: currentIndex,
-        hasSettingsBadge: hasSettingsBadge,
+        currentIndex: navigationShell.currentIndex,
+        onTap: (index) => navigationShell.goBranch(
+          index,
+          initialLocation: index == navigationShell.currentIndex,
+        ),
       ),
     );
   }
 }
 
 class _BottomNavBar extends StatelessWidget {
-  const _BottomNavBar({required this.currentIndex, this.hasSettingsBadge = false});
+  const _BottomNavBar({
+    required this.currentIndex,
+    required this.onTap,
+  });
 
   final int currentIndex;
-  final bool hasSettingsBadge;
+  final void Function(int) onTap;
 
   @override
   Widget build(BuildContext context) {
@@ -61,26 +58,19 @@ class _BottomNavBar extends StatelessWidget {
                 icon: Icons.grid_view_rounded,
                 label: 'Home',
                 isSelected: currentIndex == 0,
-                onTap: () => context.go('/'),
-              ),
-              _NavItem(
-                icon: Icons.folder_open_rounded,
-                label: 'Files',
-                isSelected: currentIndex == 1,
-                onTap: () => context.go('/notes'),
+                onTap: () => onTap(0),
               ),
               _NavItem(
                 icon: Icons.extension_rounded,
                 label: 'Templates',
-                isSelected: currentIndex == 2,
-                onTap: () => context.go('/templates'),
+                isSelected: currentIndex == 1,
+                onTap: () => onTap(1),
               ),
               _NavItem(
                 icon: Icons.settings_rounded,
                 label: 'Settings',
-                isSelected: currentIndex == 3,
-                showBadge: hasSettingsBadge,
-                onTap: () => context.go('/settings'),
+                isSelected: currentIndex == 2,
+                onTap: () => onTap(2),
               ),
             ],
           ),
@@ -96,14 +86,12 @@ class _NavItem extends StatefulWidget {
     required this.label,
     required this.isSelected,
     required this.onTap,
-    this.showBadge = false,
   });
 
   final IconData icon;
   final String label;
   final bool isSelected;
   final VoidCallback onTap;
-  final bool showBadge;
 
   @override
   State<_NavItem> createState() => _NavItemState();
@@ -173,26 +161,7 @@ class _NavItemState extends State<_NavItem> with SingleTickerProviderStateMixin 
               AnimatedContainer(
                 duration: const Duration(milliseconds: 200),
                 curve: Curves.easeOutCubic,
-                child: widget.showBadge
-                    ? Stack(
-                        clipBehavior: Clip.none,
-                        children: [
-                          Icon(widget.icon, color: color, size: 24),
-                          Positioned(
-                            top: -2,
-                            right: -4,
-                            child: Container(
-                              width: 8,
-                              height: 8,
-                              decoration: const BoxDecoration(
-                                color: Colors.orange,
-                                shape: BoxShape.circle,
-                              ),
-                            ),
-                          ),
-                        ],
-                      )
-                    : Icon(widget.icon, color: color, size: 24),
+                child: Icon(widget.icon, color: color, size: 24),
               ),
               const SizedBox(height: 4),
               AnimatedDefaultTextStyle(

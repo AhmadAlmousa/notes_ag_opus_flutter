@@ -97,6 +97,89 @@ class AppTheme {
     );
   }
 
+  /// OLED black theme — pure #000 for night reading on AMOLED displays.
+  static ThemeData get oledTheme {
+    const oledBackground = Color(0xFF000000);
+    const oledSurface = Color(0xFF0A0A0A);
+
+    final colorScheme = ColorScheme.fromSeed(
+      seedColor: primaryColor,
+      brightness: Brightness.dark,
+      surface: oledSurface,
+    ).copyWith(
+      primary: primaryColor,
+      surfaceContainerHighest: const Color(0xFF141414),
+    );
+
+    return ThemeData(
+      useMaterial3: true,
+      colorScheme: colorScheme,
+      scaffoldBackgroundColor: oledBackground,
+      textTheme: _buildTextTheme(colorScheme),
+      appBarTheme: AppBarTheme(
+        backgroundColor: oledBackground,
+        foregroundColor: colorScheme.onSurface,
+        elevation: 0,
+        scrolledUnderElevation: 0,
+        centerTitle: true,
+        titleTextStyle: GoogleFonts.inter(
+          fontSize: 18,
+          fontWeight: FontWeight.bold,
+          color: colorScheme.onSurface,
+        ),
+      ),
+      cardTheme: CardThemeData(
+        color: oledSurface,
+        elevation: 0,
+        shape: RoundedRectangleBorder(
+          borderRadius: BorderRadius.circular(12),
+          side: BorderSide(
+            color: Colors.white.withValues(alpha: 0.08),
+          ),
+        ),
+        margin: EdgeInsets.zero,
+      ),
+      inputDecorationTheme: _buildInputTheme(colorScheme),
+      elevatedButtonTheme: _buildElevatedButtonTheme(colorScheme),
+      floatingActionButtonTheme: _buildFabTheme(colorScheme),
+      bottomNavigationBarTheme: BottomNavigationBarThemeData(
+        backgroundColor: oledBackground,
+        selectedItemColor: colorScheme.primary,
+        unselectedItemColor: colorScheme.onSurface.withValues(alpha: 0.5),
+        type: BottomNavigationBarType.fixed,
+        elevation: 0,
+        selectedLabelStyle: GoogleFonts.inter(
+          fontSize: 10,
+          fontWeight: FontWeight.w600,
+        ),
+        unselectedLabelStyle: GoogleFonts.inter(
+          fontSize: 10,
+          fontWeight: FontWeight.w500,
+        ),
+      ),
+      chipTheme: _buildChipTheme(colorScheme),
+      dividerTheme: DividerThemeData(
+        color: Colors.white.withValues(alpha: 0.06),
+        thickness: 1,
+      ),
+      dialogTheme: DialogThemeData(
+        backgroundColor: oledSurface,
+      ),
+      drawerTheme: const DrawerThemeData(
+        backgroundColor: oledBackground,
+      ),
+      pageTransitionsTheme: const PageTransitionsTheme(
+        builders: {
+          TargetPlatform.android: CupertinoPageTransitionsBuilder(),
+          TargetPlatform.iOS: CupertinoPageTransitionsBuilder(),
+          TargetPlatform.linux: CupertinoPageTransitionsBuilder(),
+          TargetPlatform.macOS: CupertinoPageTransitionsBuilder(),
+          TargetPlatform.windows: CupertinoPageTransitionsBuilder(),
+        },
+      ),
+    );
+  }
+
   static TextTheme _buildTextTheme(ColorScheme colorScheme) {
     return GoogleFonts.interTextTheme().copyWith(
       displayLarge: GoogleFonts.inter(
