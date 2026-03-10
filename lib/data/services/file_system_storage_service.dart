@@ -30,6 +30,10 @@ class FileSystemStorageService extends StorageService {
   static const String _searchIndexKey = 'organote_search_index';
   static const String _storageTypeKey = 'organote_storage_type';
 
+  /// P3.3: In-memory caches — reads hit these instead of deserializing from SharedPreferences.
+  Map<String, String>? _templatesCache;
+  Map<String, String>? _notesCache;
+
   // ─── Storage Setup ───
 
   /// Whether storage has been configured.
@@ -76,22 +80,26 @@ class FileSystemStorageService extends StorageService {
 
   @override
   Map<String, String> getTemplates() {
-    // Synchronous - fall back to cached data
+    // P3.3: Return in-memory cache if populated
+    if (_templatesCache != null) return Map.from(_templatesCache!);
+    // Fallback: deserialize from SharedPreferences backup
     final json = _prefs?.getString('organote_fs_templates_cache');
     if (json == null) return {};
-    return Map<String, String>.from(jsonDecode(json) as Map);
+    _templatesCache = Map<String, String>.from(jsonDecode(json) as Map);
+    return Map.from(_templatesCache!);
   }
 
   /// Async version that reads from file system.
   Future<Map<String, String>> getTemplatesAsync() async {
     try {
       final templates = await FileSystemInterop.getAllTemplates();
-      // Cache for synchronous access
+      _templatesCache = templates;
+      // Persist to SharedPreferences as backup
       await _prefs?.setString(
           'organote_fs_templates_cache', jsonEncode(templates));
       return templates;
     } catch (e) {
-      return getTemplates(); // Fall back to cache
+      return getTemplates();
     }
   }
 
@@ -104,11 +112,12 @@ class FileSystemStorageService extends StorageService {
   Future<void> saveTemplate(String templateId, String markdownContent) async {
     await FileSystemInterop.writeFile(
         'templates/$templateId.md', markdownContent);
-    // Update cache
-    final templates = getTemplates();
-    templates[templateId] = markdownContent;
+    // Update in-memory cache
+    _templatesCache ??= {};
+    _templatesCache![templateId] = markdownContent;
+    // Backup to SharedPreferences
     await _prefs?.setString(
-        'organote_fs_templates_cache', jsonEncode(templates));
+        'organote_fs_templates_cache', jsonEncode(_templatesCache));
   }
 
   @override
@@ -116,32 +125,34 @@ class FileSystemStorageService extends StorageService {
     try {
       await FileSystemInterop.deleteFile('templates/$templateId.md');
     } catch (_) {}
-    // Update cache
-    final templates = getTemplates();
-    templates.remove(templateId);
+    _templatesCache?.remove(templateId);
     await _prefs?.setString(
-        'organote_fs_templates_cache', jsonEncode(templates));
+        'organote_fs_templates_cache', jsonEncode(_templatesCache ?? {}));
   }
 
   // ─── Note Operations ───
 
   @override
   Map<String, String> getNotes() {
-    // Synchronous - fall back to cached data
+    // P3.3: Return in-memory cache if populated
+    if (_notesCache != null) return Map.from(_notesCache!);
+    // Fallback: deserialize from SharedPreferences backup
     final json = _prefs?.getString('organote_fs_notes_cache');
     if (json == null) return {};
-    return Map<String, String>.from(jsonDecode(json) as Map);
+    _notesCache = Map<String, String>.from(jsonDecode(json) as Map);
+    return Map.from(_notesCache!);
   }
 
   /// Async version that reads from file system.
   Future<Map<String, String>> getNotesAsync() async {
     try {
       final notes = await FileSystemInterop.getAllNotes();
-      // Cache for synchronous access
+      _notesCache = notes;
+      // Backup to SharedPreferences
       await _prefs?.setString('organote_fs_notes_cache', jsonEncode(notes));
       return notes;
     } catch (e) {
-      return getNotes(); // Fall back to cache
+      return getNotes();
     }
   }
 
@@ -168,14 +179,14 @@ class FileSystemStorageService extends StorageService {
     String filename,
     String markdownContent,
   ) async {
-    // Ensure .md extension
     final safeFilename = filename.endsWith('.md') ? filename : '$filename.md';
     await FileSystemInterop.writeFile(
         'notes/$category/$safeFilename', markdownContent);
-    // Update cache
-    final notes = getNotes();
-    notes['$category/$safeFilename'] = markdownContent;
-    await _prefs?.setString('organote_fs_notes_cache', jsonEncode(notes));
+    // Update in-memory cache
+    _notesCache ??= {};
+    _notesCache!['$category/$safeFilename'] = markdownContent;
+    // Backup to SharedPreferences
+    await _prefs?.setString('organote_fs_notes_cache', jsonEncode(_notesCache));
   }
 
   @override
@@ -183,10 +194,9 @@ class FileSystemStorageService extends StorageService {
     try {
       await FileSystemInterop.deleteFile('notes/$category/$filename');
     } catch (_) {}
-    // Update cache
-    final notes = getNotes();
-    notes.remove('$category/$filename');
-    await _prefs?.setString('organote_fs_notes_cache', jsonEncode(notes));
+    _notesCache?.remove('$category/$filename');
+    await _prefs?.setString(
+        'organote_fs_notes_cache', jsonEncode(_notesCache ?? {}));
   }
 
   // ─── Categories ───

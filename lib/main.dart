@@ -83,20 +83,69 @@ class OrganoteApp extends ConsumerWidget {
         // Start sync in background (non-blocking)
         Future.microtask(() => initSync(ref));
 
-        return MaterialApp.router(
-          title: 'Organote',
-          debugShowCheckedModeBanner: false,
-          theme: AppTheme.lightTheme,
-          darkTheme: isOled ? AppTheme.oledTheme : AppTheme.darkTheme,
-          themeMode: themeMode,
-          locale: locale,
-          localizationsDelegates: _localizationsDelegates,
-          supportedLocales: _supportedLocales,
-          routerConfig: AppRouter.router,
+        return _SyncLifecycleObserver(
+          ref: ref,
+          child: MaterialApp.router(
+            title: 'Organote',
+            debugShowCheckedModeBanner: false,
+            theme: AppTheme.lightTheme,
+            darkTheme: isOled ? AppTheme.oledTheme : AppTheme.darkTheme,
+            themeMode: themeMode,
+            locale: locale,
+            localizationsDelegates: _localizationsDelegates,
+            supportedLocales: _supportedLocales,
+            routerConfig: AppRouter.router,
+          ),
         );
       },
     );
   }
+}
+
+/// P1.6: Lifecycle observer that triggers sync on app foreground/background.
+/// Replaces the 5-minute Timer.periodic polling.
+class _SyncLifecycleObserver extends StatefulWidget {
+  const _SyncLifecycleObserver({required this.ref, required this.child});
+  final WidgetRef ref;
+  final Widget child;
+
+  @override
+  State<_SyncLifecycleObserver> createState() => _SyncLifecycleObserverState();
+}
+
+class _SyncLifecycleObserverState extends State<_SyncLifecycleObserver>
+    with WidgetsBindingObserver {
+  @override
+  void initState() {
+    super.initState();
+    WidgetsBinding.instance.addObserver(this);
+  }
+
+  @override
+  void dispose() {
+    WidgetsBinding.instance.removeObserver(this);
+    super.dispose();
+  }
+
+  @override
+  void didChangeAppLifecycleState(AppLifecycleState state) {
+    final syncService = widget.ref.read(syncServiceProvider);
+    if (!syncService.isConnected) return;
+
+    if (state == AppLifecycleState.resumed) {
+      // App came to foreground → pull remote changes
+      debugPrint('[Lifecycle] App resumed → pulling remote changes');
+      syncService.pullAll();
+    } else if (state == AppLifecycleState.paused ||
+        state == AppLifecycleState.inactive) {
+      // App going to background → push local changes
+      debugPrint('[Lifecycle] App pausing → pushing local changes');
+      syncService.pushAll();
+    }
+  }
+
+  @override
+  Widget build(BuildContext context) => widget.child;
 }
 
 /// Splash screen shown during initialization with real progress steps.

@@ -1,17 +1,34 @@
 import 'dart:async';
 import 'dart:convert';
+import 'dart:math';
 
 import 'package:flutter/foundation.dart';
 import 'package:flutter/widgets.dart';
 import 'package:google_sign_in/google_sign_in.dart';
 import 'package:googleapis/drive/v3.dart' as drive;
+import 'package:googleapis_auth/googleapis_auth.dart' show AccessDeniedException;
 import 'package:extension_google_sign_in_as_googleapis_auth/extension_google_sign_in_as_googleapis_auth.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 
 import 'storage_service.dart';
+import 'sync_ledger.dart';
 
 /// Callback type for notifying the UI about remote changes.
 typedef OnRemoteChange = void Function();
+
+/// Granular sync state for reactive UI updates.
+enum SyncState {
+  /// Not signed in.
+  disconnected,
+  /// Authentication in progress.
+  connecting,
+  /// Signed in and idle.
+  connected,
+  /// Actively syncing files.
+  syncing,
+  /// An error occurred (check lastAuthError for details).
+  error,
+}
 
 /// Google Drive sync service.
 ///
@@ -33,7 +50,6 @@ class SyncService {
   drive.DriveApi? _driveApi;
   StorageService? _storage;
   String? _rootFolderId; // "Organote" folder ID
-  bool _connected = false;
   String? _currentEmail;
   StreamSubscription<GoogleSignInAuthenticationEvent>? _authSubscription;
   Timer? _pollTimer;
@@ -59,8 +75,13 @@ class SyncService {
   /// Callback invoked when a remote change is received and applied locally.
   OnRemoteChange? onRemoteChange;
 
+  /// P3.1: Reactive state notifier — screens watch this via syncStateProvider.
+  final ValueNotifier<SyncState> stateNotifier =
+      ValueNotifier(SyncState.disconnected);
+
   /// Whether the service is connected (signed in with a valid Drive client).
-  bool get isConnected => _connected;
+  bool get isConnected => stateNotifier.value == SyncState.connected ||
+      stateNotifier.value == SyncState.syncing;
 
   /// Currently signed-in account email.
   String? get accountEmail => _currentEmail;
@@ -72,10 +93,11 @@ class SyncService {
 
   Future<void> _ensureInitialized() async {
     if (_initialized) return;
+    // P2.3: On Android, clientId must be null — reads from google-services.json.
+    // On web and iOS, pass the OAuth client ID explicitly.
     await _googleSignIn.initialize(
-      clientId: _clientId,
-      // serverClientId is NOT supported on web — omit it there
-      serverClientId: kIsWeb ? null : _clientId,
+      clientId: kIsWeb ? _clientId : null,
+      serverClientId: null,
     );
     _initialized = true;
   }
@@ -115,7 +137,7 @@ class SyncService {
 
       _driveApi = drive.DriveApi(httpClient);
       _rootFolderId = await _getOrCreateFolder('Organote');
-      _connected = true;
+      stateNotifier.value = SyncState.connected;
       _lastAuthError = null;
       return true;
     } catch (e) {
@@ -130,11 +152,13 @@ class SyncService {
   /// Sign in to Google and initialize Drive API.
   Future<bool> signIn({required StorageService storage}) async {
     _storage = storage;
+    stateNotifier.value = SyncState.connecting;
     try {
       await _ensureInitialized();
 
       if (kIsWeb) {
         // On web, authenticate() is not supported.
+        // P2.4: Removed 120s timeout — let auth stream report naturally.
         final completer = Completer<bool>();
         _authSubscription?.cancel();
         _authSubscription = _googleSignIn.authenticationEvents.listen(
@@ -143,23 +167,19 @@ class SyncService {
               final account = event.user;
               final result = await _obtainDriveClientFrom(account);
               if (result) {
-                startPolling();
-                // Initial push on sign-in
-                Future.microtask(() => pushAll());
+                // Initial sync on sign-in
+                Future.microtask(() => syncAll());
               }
               if (!completer.isCompleted) completer.complete(result);
             }
           },
           onError: (e) {
-            debugPrint('Auth stream error: $e');
+            debugPrint('[Sync] Auth stream error: $e');
             if (!completer.isCompleted) completer.complete(false);
           },
         );
         _googleSignIn.attemptLightweightAuthentication();
-        return await completer.future.timeout(
-          const Duration(seconds: 120),
-          onTimeout: () => false,
-        );
+        return await completer.future;
       }
 
       // Non-web: use standard authenticate()
@@ -169,35 +189,41 @@ class SyncService {
 
       final result = await _obtainDriveClientFrom(account);
       if (result) {
-        startPolling();
-        // Initial push on sign-in
-        Future.microtask(() => pushAll());
+        // Initial sync on sign-in
+        Future.microtask(() => syncAll());
       }
       return result;
     } on GoogleSignInException catch (e) {
       if (e.code == GoogleSignInExceptionCode.canceled) {
         debugPrint('Google Sign-In cancelled by user');
+        stateNotifier.value = SyncState.disconnected;
         return false;
       }
       debugPrint('Google Sign-In failed: $e');
+      stateNotifier.value = SyncState.error;
+      _lastAuthError = 'Sign-in failed: $e';
       return false;
     } catch (e) {
       debugPrint('Google Sign-In failed: $e');
+      stateNotifier.value = SyncState.error;
+      _lastAuthError = 'Sign-in failed: $e';
       return false;
     }
   }
 
   /// Try to silently reconnect (e.g., on app restart).
+  /// P2.2: On web, skip auto-login entirely. On mobile, use lightweight auth
+  /// which restores cached sessions without interactive UI.
   Future<bool> tryReconnect({required StorageService storage}) async {
     _storage = storage;
     try {
       await _ensureInitialized();
 
       // On web, don't auto-trigger the sign-in UI.
-      // attemptLightweightAuthentication() shows the FedCM prompt which
-      // is disorienting on page load. User must explicitly click sign-in.
       if (kIsWeb) return false;
 
+      // On mobile: attemptLightweightAuthentication restores cached sessions
+      // without showing interactive UI (equivalent to old signInSilently).
       final maybeFuture = _googleSignIn.attemptLightweightAuthentication();
       if (maybeFuture == null) return false;
 
@@ -205,7 +231,6 @@ class SyncService {
       if (account == null) return false;
 
       final result = await _obtainDriveClientFrom(account);
-      if (result) startPolling();
       return result;
     } catch (_) {
       return false;
@@ -219,24 +244,22 @@ class SyncService {
     await _googleSignIn.signOut();
     _driveApi = null;
     _rootFolderId = null;
-    _connected = false;
+    stateNotifier.value = SyncState.disconnected;
     _currentEmail = null;
   }
 
-  // ── Polling ─────────────────────────────────────────────────────────
+  // ── Polling (P1.6: kept as no-ops, lifecycle hooks drive sync) ──────
 
   /// Start periodic remote change polling.
+  /// P1.6: No-op — sync is now triggered by app lifecycle hooks.
   void startPolling() {
-    _pollTimer?.cancel();
-    _pollTimer = Timer.periodic(_pollInterval, (_) => pullAll());
-    debugPrint('[Sync] Polling started (every ${_pollInterval.inMinutes}m)');
+    debugPrint('[Sync] Polling disabled — using lifecycle hooks');
   }
 
   /// Stop periodic polling.
   void stopPolling() {
     _pollTimer?.cancel();
     _pollTimer = null;
-    debugPrint('[Sync] Polling stopped');
   }
 
   /// Schedule a debounced pull after a push to detect concurrent edits.
@@ -334,86 +357,299 @@ class SyncService {
   }
 
   /// Push all local notes and templates to Drive.
+  /// P3.4: Batched in groups of 5 using Future.wait().
   Future<void> pushAll() async {
     if (_driveApi == null || _storage == null) return;
 
-    // Push templates
+    final tasks = <MapEntry<String, String>>[];
+
+    // Collect templates
     final templates = _storage!.getTemplates();
     for (final entry in templates.entries) {
-      await pushDocument('templates/${entry.key}.md', entry.value);
+      tasks.add(MapEntry('templates/${entry.key}.md', entry.value));
     }
 
-    // Push notes
+    // Collect notes
     final notes = _storage!.getNotes();
     for (final entry in notes.entries) {
       final path = 'notes/${entry.key}';
       final safePath = path.endsWith('.md') ? path : '$path.md';
-      await pushDocument(safePath, entry.value);
+      tasks.add(MapEntry(safePath, entry.value));
+    }
+
+    // Process in batches of 5
+    for (var i = 0; i < tasks.length; i += 5) {
+      final batch = tasks.sublist(i, min(i + 5, tasks.length));
+      await Future.wait(
+        batch.map((e) => pushDocument(e.key, e.value)),
+      );
     }
   }
 
   /// Pull all remote docs from Drive and overwrite local.
+  /// Now delegates to syncAll() for proper reconciliation.
   Future<void> pullAll() async {
+    await syncAll();
+  }
+
+  /// P1.1: Full bidirectional sync with 3-way reconciliation.
+  ///
+  /// Compares local files, remote Drive files, and the sync ledger to:
+  /// - Download new/updated remote files
+  /// - Upload new/updated local files
+  /// - Delete files removed on either side
+  /// - Handle trash zombies (P1.2)
+  /// - Skip unchanged files via timestamp comparison (P1.3)
+  Future<void> syncAll() async {
     if (_driveApi == null || _storage == null || _rootFolderId == null) return;
 
+    final wasState = stateNotifier.value;
+    stateNotifier.value = SyncState.syncing;
     try {
+      final ledger = SyncLedger();
+      await ledger.init();
       bool hasChanges = false;
 
-      // Pull templates
+      // ── Build local manifest ──
+      final localFiles = <String, String>{}; // path → content
+      final templates = _storage!.getTemplates();
+      for (final e in templates.entries) {
+        localFiles['templates/${e.key}.md'] = e.value;
+      }
+      final notes = _storage!.getNotes();
+      for (final e in notes.entries) {
+        final path = 'notes/${e.key}';
+        localFiles[path.endsWith('.md') ? path : '$path.md'] = e.value;
+      }
+
+      // ── Build remote manifest ──
+      final remoteFiles = <String, drive.File>{}; // path → Drive file
+
+      // Templates
       final templatesFolderId = await _findFolder('templates', _rootFolderId!);
       if (templatesFolderId != null) {
-        final templateFiles = await _listFiles(templatesFolderId);
-        for (final file in templateFiles) {
-          final content = await _downloadFile(file.id!);
-          if (content != null && file.name != null) {
-            final templateId = file.name!.replaceAll('.md', '');
-            final existing = _storage!.getTemplates()[templateId];
-            if (existing != content) {
-              await _storage!.saveTemplate(templateId, content);
-              hasChanges = true;
-            }
-          }
+        final files = await _listFiles(templatesFolderId);
+        for (final f in files) {
+          if (f.name != null) remoteFiles['templates/${f.name}'] = f;
         }
       }
 
-      // Pull notes (recursive — category folders)
+      // Notes (recursive category folders)
       final notesFolderId = await _findFolder('notes', _rootFolderId!);
       if (notesFolderId != null) {
-        final categoryFolders = await _listFolders(notesFolderId);
-        for (final catFolder in categoryFolders) {
-          final category = catFolder.name ?? 'unknown';
-          final noteFiles = await _listFiles(catFolder.id!);
-          for (final file in noteFiles) {
-            final content = await _downloadFile(file.id!);
-            if (content != null && file.name != null) {
-              final existing = _storage!.getNote(category, file.name!);
-              if (existing != content) {
-                await _storage!.saveNote(category, file.name!, content);
-                hasChanges = true;
-              }
-            }
+        final catFolders = await _listFolders(notesFolderId);
+        for (final cat in catFolders) {
+          final catName = cat.name ?? 'unknown';
+          final catFiles = await _listFiles(cat.id!);
+          for (final f in catFiles) {
+            if (f.name != null) remoteFiles['notes/$catName/${f.name}'] = f;
           }
         }
       }
 
-      // Only notify UI if something actually changed
+      // ── Get trash list for zombie detection (P1.2) ──
+      final trashKeys = _storage!.getTrash().keys.map((k) {
+        final p = 'notes/$k';
+        return p.endsWith('.md') ? p : '$p.md';
+      }).toSet();
+
+      // ── All paths across all 3 sources ──
+      final allPaths = <String>{
+        ...localFiles.keys,
+        ...remoteFiles.keys,
+        ...ledger.entries.keys,
+      };
+
+      for (final path in allPaths) {
+        final localContent = localFiles[path];
+        final remoteFile = remoteFiles[path];
+        final ledgerEntry = ledger.getEntry(path);
+
+        final localHash = localContent != null
+            ? SyncLedger.hashContent(localContent)
+            : null;
+        final remoteModTime = remoteFile?.modifiedTime;
+
+        // ── Case 1: In remote, NOT in ledger → new remote file ──
+        if (remoteFile != null && ledgerEntry == null && localContent == null) {
+          // P1.2: If this file is in local trash, trash it on Drive instead
+          if (trashKeys.contains(path)) {
+            try {
+              await _driveApi!.files.update(
+                drive.File()..trashed = true,
+                remoteFile.id!,
+              );
+              debugPrint('[Sync] Trashed on Drive (zombie): $path');
+            } catch (e) {
+              debugPrint('[Sync] Failed to trash on Drive: $e');
+            }
+            continue;
+          }
+
+          // Download new remote file
+          final content = await _downloadFile(remoteFile.id!);
+          if (content != null) {
+            await _saveToStorage(path, content);
+            await ledger.setEntry(path, SyncEntry(
+              localHash: SyncLedger.hashContent(content),
+              remoteModifiedTime: remoteModTime,
+              syncedAt: DateTime.now().toUtc(),
+            ));
+            hasChanges = true;
+            debugPrint('[Sync] Downloaded new: $path');
+          }
+        }
+
+        // ── Case 2: In local, NOT in ledger → new local file ──
+        else if (localContent != null && ledgerEntry == null && remoteFile == null) {
+          await pushDocument(path, localContent);
+          await ledger.setEntry(path, SyncEntry(
+            localHash: localHash!,
+            remoteModifiedTime: DateTime.now().toUtc(),
+            syncedAt: DateTime.now().toUtc(),
+          ));
+          debugPrint('[Sync] Uploaded new: $path');
+        }
+
+        // ── Case 3: In both local and remote ──
+        else if (localContent != null && remoteFile != null) {
+          // P1.3: Delta sync — compare timestamps
+          final localChanged = ledgerEntry == null || localHash != ledgerEntry.localHash;
+          final remoteChanged = ledgerEntry == null ||
+              (remoteModTime != null &&
+                  ledgerEntry.remoteModifiedTime != null &&
+                  remoteModTime.isAfter(ledgerEntry.remoteModifiedTime!));
+
+          if (remoteChanged && !localChanged) {
+            // Remote is newer → download
+            final content = await _downloadFile(remoteFile.id!);
+            if (content != null) {
+              await _saveToStorage(path, content);
+              await ledger.setEntry(path, SyncEntry(
+                localHash: SyncLedger.hashContent(content),
+                remoteModifiedTime: remoteModTime,
+                syncedAt: DateTime.now().toUtc(),
+              ));
+              hasChanges = true;
+              debugPrint('[Sync] Updated from remote: $path');
+            }
+          } else if (localChanged && !remoteChanged) {
+            // Local is newer → upload
+            await pushDocument(path, localContent);
+            await ledger.setEntry(path, SyncEntry(
+              localHash: localHash!,
+              remoteModifiedTime: DateTime.now().toUtc(),
+              syncedAt: DateTime.now().toUtc(),
+            ));
+            debugPrint('[Sync] Updated to remote: $path');
+          } else if (localChanged && remoteChanged) {
+            // Conflict — last-write-wins based on modifiedTime
+            if (remoteModTime != null && ledgerEntry?.syncedAt != null &&
+                remoteModTime.isAfter(ledgerEntry!.syncedAt)) {
+              final content = await _downloadFile(remoteFile.id!);
+              if (content != null) {
+                await _saveToStorage(path, content);
+                await ledger.setEntry(path, SyncEntry(
+                  localHash: SyncLedger.hashContent(content),
+                  remoteModifiedTime: remoteModTime,
+                  syncedAt: DateTime.now().toUtc(),
+                ));
+                hasChanges = true;
+                debugPrint('[Sync] Conflict resolved (remote wins): $path');
+              }
+            } else {
+              await pushDocument(path, localContent);
+              await ledger.setEntry(path, SyncEntry(
+                localHash: localHash!,
+                remoteModifiedTime: DateTime.now().toUtc(),
+                syncedAt: DateTime.now().toUtc(),
+              ));
+              debugPrint('[Sync] Conflict resolved (local wins): $path');
+            }
+          }
+          // else: neither changed → skip (P1.3 delta sync)
+        }
+
+        // ── Case 4: In ledger, MISSING from local → local deletion ──
+        else if (ledgerEntry != null && localContent == null && remoteFile != null) {
+          // File was deleted locally → delete from Drive
+          try {
+            await _driveApi!.files.update(
+              drive.File()..trashed = true,
+              remoteFile.id!,
+            );
+            debugPrint('[Sync] Trashed on Drive (local deletion): $path');
+          } catch (e) {
+            debugPrint('[Sync] Failed to trash on Drive: $e');
+          }
+          await ledger.removeEntry(path);
+        }
+
+        // ── Case 5: In ledger, MISSING from remote → remote deletion ──
+        else if (ledgerEntry != null && remoteFile == null && localContent != null) {
+          // File was deleted remotely → delete locally
+          await _deleteFromStorage(path);
+          await ledger.removeEntry(path);
+          hasChanges = true;
+          debugPrint('[Sync] Deleted locally (remote deletion): $path');
+        }
+
+        // ── Case 6: In ledger only → deleted from both ──
+        else if (ledgerEntry != null && localContent == null && remoteFile == null) {
+          await ledger.removeEntry(path);
+        }
+      }
+
       if (hasChanges) {
-        debugPrint('[Sync] Remote changes detected and applied');
+        debugPrint('[Sync] Reconciliation complete — changes applied');
         try {
           onRemoteChange?.call();
         } catch (e) {
           debugPrint('[Sync] onRemoteChange callback error: $e');
         }
+      } else {
+        debugPrint('[Sync] Reconciliation complete — no changes');
       }
+      stateNotifier.value = SyncState.connected;
     } catch (e) {
-      debugPrint('[Sync] pullAll error: $e');
+      debugPrint('[Sync] syncAll error: $e');
+      stateNotifier.value = SyncState.error;
+      _lastAuthError = 'Sync failed: $e';
     }
   }
 
-  /// Full bidirectional sync.
-  Future<void> syncAll() async {
-    await pushAll();
-    await pullAll();
+  /// Save content to the correct storage location based on path.
+  Future<void> _saveToStorage(String path, String content) async {
+    if (path.startsWith('templates/')) {
+      final templateId = path
+          .replaceFirst('templates/', '')
+          .replaceAll('.md', '');
+      await _storage!.saveTemplate(templateId, content);
+    } else if (path.startsWith('notes/')) {
+      final parts = path.replaceFirst('notes/', '').split('/');
+      if (parts.length >= 2) {
+        final category = parts.first;
+        final filename = parts.sublist(1).join('/');
+        await _storage!.saveNote(category, filename, content);
+      }
+    }
+  }
+
+  /// Delete content from the correct storage location based on path.
+  Future<void> _deleteFromStorage(String path) async {
+    if (path.startsWith('templates/')) {
+      final templateId = path
+          .replaceFirst('templates/', '')
+          .replaceAll('.md', '');
+      await _storage!.deleteTemplate(templateId);
+    } else if (path.startsWith('notes/')) {
+      final parts = path.replaceFirst('notes/', '').split('/');
+      if (parts.length >= 2) {
+        final category = parts.first;
+        final filename = parts.sublist(1).join('/');
+        await _storage!.deleteNote(category, filename);
+      }
+    }
   }
 
   // ── Helpers ─────────────────────────────────────────────────────────
@@ -511,29 +747,45 @@ class SyncService {
   }
 
   /// List all non-folder files in a folder.
+  /// P1.4: Paginated with nextPageToken to handle >100 files.
   Future<List<drive.File>> _listFiles(String parentId) async {
-    final q = "'$parentId' in parents"
-        " and mimeType != 'application/vnd.google-apps.folder'"
-        " and trashed = false";
-    final result = await _driveApi!.files.list(
-      q: q,
-      spaces: 'drive',
-      $fields: 'files(id, name, modifiedTime)',
-    );
-    return result.files ?? [];
+    final allFiles = <drive.File>[];
+    String? pageToken;
+    do {
+      final result = await _driveApi!.files.list(
+        q: "'$parentId' in parents"
+            " and mimeType != 'application/vnd.google-apps.folder'"
+            " and trashed = false",
+        pageToken: pageToken,
+        pageSize: 100,
+        spaces: 'drive',
+        $fields: 'nextPageToken, files(id, name, modifiedTime)',
+      );
+      allFiles.addAll(result.files ?? []);
+      pageToken = result.nextPageToken;
+    } while (pageToken != null);
+    return allFiles;
   }
 
   /// List all sub-folders in a folder.
+  /// P1.4: Paginated with nextPageToken.
   Future<List<drive.File>> _listFolders(String parentId) async {
-    final q = "'$parentId' in parents"
-        " and mimeType = 'application/vnd.google-apps.folder'"
-        " and trashed = false";
-    final result = await _driveApi!.files.list(
-      q: q,
-      spaces: 'drive',
-      $fields: 'files(id, name)',
-    );
-    return result.files ?? [];
+    final allFolders = <drive.File>[];
+    String? pageToken;
+    do {
+      final result = await _driveApi!.files.list(
+        q: "'$parentId' in parents"
+            " and mimeType = 'application/vnd.google-apps.folder'"
+            " and trashed = false",
+        pageToken: pageToken,
+        pageSize: 100,
+        spaces: 'drive',
+        $fields: 'nextPageToken, files(id, name)',
+      );
+      allFolders.addAll(result.files ?? []);
+      pageToken = result.nextPageToken;
+    } while (pageToken != null);
+    return allFolders;
   }
 
   /// Ensure all intermediate folders in a path exist (relative to Organote).
@@ -570,10 +822,35 @@ class SyncService {
     }
   }
 
+  /// P1.5: Retry a Drive API call on 401 (token expired).
+  /// Re-authenticates silently and reconstructs the DriveApi client.
+  Future<T> _withRetryOn401<T>(Future<T> Function() action) async {
+    try {
+      return await action();
+    } on AccessDeniedException catch (_) {
+      debugPrint('[Sync] 401 — attempting token refresh...');
+      try {
+        // Try silent re-auth
+        final maybeFuture = _googleSignIn.attemptLightweightAuthentication();
+        if (maybeFuture != null) {
+          final account = await maybeFuture;
+          if (account != null) {
+            await _obtainDriveClientFrom(account);
+          }
+        }
+        return await action();
+      } catch (retryError) {
+        debugPrint('[Sync] Token refresh failed: $retryError');
+        rethrow;
+      }
+    }
+  }
+
   /// Dispose and clean up.
   void dispose() {
     stopPolling();
     _syncDebounceTimer?.cancel();
+    _authSubscription?.cancel();
     signOut();
     _instance = null;
   }

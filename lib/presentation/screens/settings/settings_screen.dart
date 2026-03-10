@@ -173,6 +173,7 @@ class _SettingsScreenState extends ConsumerState<SettingsScreen>
 
                     const SizedBox(height: 16),
 
+
                     // Recycle Bin section
                     Builder(builder: (context) {
                       final trashItems = ref.read(noteRepoProvider).getTrash();
@@ -880,8 +881,7 @@ class _SettingsScreenState extends ConsumerState<SettingsScreen>
                   child: OutlinedButton.icon(
                     onPressed: () async {
                       await syncService.signOut();
-                      ref.read(syncStatusProvider.notifier).setConnected(false);
-                      setState(() {});
+                      // State auto-updates via syncStateProvider
                     },
                     icon: const Icon(Icons.logout),
                     label: const Text('Sign Out'),
@@ -1020,26 +1020,30 @@ class _SettingsScreenState extends ConsumerState<SettingsScreen>
 
   // ── FedCM / Google Sign-In helpers ─────────────────────────────────
 
+  bool _webSignInInitialized = false;
+
   /// Build Google's native FedCM sign-in button for web.
-  /// Uses `renderButton` from google_sign_in_web which triggers FedCM,
-  /// bypassing COOP/COEP restrictions entirely.
+  /// P2.1: Auth setup is guarded by _webSignInInitialized flag so
+  /// theme changes and widget rebuilds don't re-trigger the auth flow.
   Widget _buildGoogleSignInButton(
     dynamic syncService,
     dynamic storage,
   ) {
     if (!kIsWeb) return const SizedBox.shrink();
 
-    // Set up the sync service listener — signIn on web sets up
-    // authenticationEvents and calls attemptLightweightAuthentication.
-    // Once the user clicks Google's FedCM button, auth events fire
-    // back through this listener.
-    _webSignInFuture ??= _setupWebSignIn(syncService, storage);
+    // One-time setup: start listening for auth events.
+    // Guarded by flag — not affected by widget rebuilds.
+    if (!_webSignInInitialized) {
+      _webSignInInitialized = true;
+      // Use addPostFrameCallback to avoid triggering during build
+      WidgetsBinding.instance.addPostFrameCallback((_) {
+        if (mounted) _setupWebSignIn(syncService, storage);
+      });
+    }
 
-    // Render Google's native FedCM sign-in button
+    // Render Google's native FedCM sign-in button (purely visual)
     return _buildWebRenderButton();
   }
-
-  Future<void>? _webSignInFuture;
 
   Future<void> _setupWebSignIn(dynamic syncService, dynamic storage) async {
     final success = await syncService.signIn(storage: storage);
@@ -1124,6 +1128,6 @@ class _SettingsScreenState extends ConsumerState<SettingsScreen>
       Navigator.pop(context); // close dialog
     }
 
-    ref.read(syncStatusProvider.notifier).setConnected(true);
+    // State auto-updates via syncStateProvider
   }
 }

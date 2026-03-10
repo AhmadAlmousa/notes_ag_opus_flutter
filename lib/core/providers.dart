@@ -289,6 +289,23 @@ final syncServiceProvider = Provider<SyncService>((ref) {
   return SyncService.instance;
 });
 
+/// P3.1: Reactive sync state — watches SyncService.stateNotifier.
+/// Screens use `ref.watch(syncStateProvider)` instead of manual setState.
+final syncStateProvider = Provider<SyncState>((ref) {
+  final syncService = ref.read(syncServiceProvider);
+  // Create a listener for the ValueNotifier, invalidate on change
+  void listener() => ref.invalidateSelf();
+  syncService.stateNotifier.addListener(listener);
+  ref.onDispose(() => syncService.stateNotifier.removeListener(listener));
+  return syncService.stateNotifier.value;
+});
+
+/// Backwards-compatible: whether sync is currently connected.
+final syncStatusProvider = Provider<bool>((ref) {
+  final state = ref.watch(syncStateProvider);
+  return state == SyncState.connected || state == SyncState.syncing;
+});
+
 /// Incremented on each remote change — screens watch this to rebuild.
 final syncTriggerProvider = NotifierProvider<SyncTriggerNotifier, int>(
   SyncTriggerNotifier.new,
@@ -299,18 +316,6 @@ class SyncTriggerNotifier extends Notifier<int> {
   int build() => 0;
 
   void trigger() => state++;
-}
-
-/// Whether sync is currently connected.
-final syncStatusProvider = NotifierProvider<SyncStatusNotifier, bool>(
-  SyncStatusNotifier.new,
-);
-
-class SyncStatusNotifier extends Notifier<bool> {
-  @override
-  bool build() => false;
-
-  void setConnected(bool value) => state = value;
 }
 
 /// Try to reconnect Google Drive sync from a previous session.
@@ -335,7 +340,6 @@ Future<bool> initSync(WidgetRef ref) async {
     // Pull remote data
     await syncService.pullAll();
 
-    ref.read(syncStatusProvider.notifier).setConnected(true);
     return true;
   } catch (e) {
     debugPrint('Google Drive sync init failed: $e');
