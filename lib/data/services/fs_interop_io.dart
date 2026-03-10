@@ -104,6 +104,11 @@ class FileSystemInterop {
     return null;
   }
 
+  /// Request permission interactively — no-op on native (only needed for web FSA).
+  static Future<String?> requestPermissionInteractive() async {
+    return null;
+  }
+
   /// Initialize notes/, templates/, and assets/ directories.
   static Future<void> initDirectories() async {
     if (_rootPath == null) return;

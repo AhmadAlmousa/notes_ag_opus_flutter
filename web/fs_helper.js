@@ -114,29 +114,35 @@
                     return handle.name;
                 }
 
-                // requestPermission requires a user gesture — add a timeout so
-                // the app doesn't hang forever when called from init code
-                try {
-                    const reqPerm = await Promise.race([
-                        handle.requestPermission({ mode: 'readwrite' }),
-                        new Promise((_, reject) =>
-                            setTimeout(() => reject(new Error('Permission timeout')), 5000)
-                        )
-                    ]);
-                    if (reqPerm === 'granted') {
-                        this._rootHandle = handle;
-                        this._storageType = 'fsa';
-                        return handle.name;
-                    }
-                } catch (e) {
-                    console.warn('[organoteFS] requestPermission timed out or denied:', e);
+                // Permission needs user activation — return special flag
+                // so Dart can show a "Restore Access" screen with a button
+                if (perm === 'prompt') {
+                    // Stash the handle for requestPermissionInteractive
+                    this._pendingHandle = handle;
+                    return 'NEEDS_ACTIVATION';
                 }
 
+                // 'denied' — can't recover
                 return null;
             } catch (e) {
                 console.warn('[organoteFS] reconnect error:', e);
                 return null;
             }
+        },
+
+        // Request permission interactively (must be called from a user gesture/click)
+        requestPermissionInteractive: async function () {
+            const handle = this._pendingHandle;
+            if (!handle) throw new Error('No pending handle');
+
+            const perm = await handle.requestPermission({ mode: 'readwrite' });
+            if (perm === 'granted') {
+                this._rootHandle = handle;
+                this._storageType = 'fsa';
+                this._pendingHandle = null;
+                return handle.name;
+            }
+            return null;
         },
 
         // Get current storage type  

@@ -97,7 +97,7 @@ class SyncService {
     // On web and iOS, pass the OAuth client ID explicitly.
     await _googleSignIn.initialize(
       clientId: kIsWeb ? _clientId : null,
-      serverClientId: null,
+      serverClientId: _clientId,
     );
     _initialized = true;
   }

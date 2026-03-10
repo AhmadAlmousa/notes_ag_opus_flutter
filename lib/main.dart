@@ -5,8 +5,10 @@ import 'package:flutter_localizations/flutter_localizations.dart';
 import 'core/providers.dart';
 import 'core/router.dart';
 import 'core/theme/app_theme.dart';
+import 'data/services/file_system_storage_service.dart';
 import 'data/services/fs_interop.dart';
 import 'l10n/app_localizations.dart';
+import 'presentation/screens/setup/restore_access_screen.dart';
 import 'presentation/screens/setup/setup_screen.dart';
 
 void main() {
@@ -71,6 +73,24 @@ class OrganoteApp extends ConsumerWidget {
                   ref,
                   storageType == 'none' ? 'local' : storageType,
                 );
+              },
+            ),
+          );
+        }
+
+        // Show restore screen if FSA needs user gesture to re-grant permission
+        if (FileSystemStorageService.needsUserActivation) {
+          return MaterialApp(
+            title: 'Organote',
+            debugShowCheckedModeBanner: false,
+            theme: AppTheme.lightTheme,
+            darkTheme: AppTheme.darkTheme,
+            themeMode: init.themeMode,
+            localizationsDelegates: _localizationsDelegates,
+            supportedLocales: _supportedLocales,
+            home: RestoreAccessScreen(
+              onRestored: () {
+                ref.invalidate(appInitProvider);
               },
             ),
           );

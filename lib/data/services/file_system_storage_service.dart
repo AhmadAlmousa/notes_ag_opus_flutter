@@ -51,7 +51,12 @@ class FileSystemStorageService extends StorageService {
     await _prefs?.setString(_storageTypeKey, type);
   }
 
+  /// Whether the FSA handle needs a user gesture to re-grant permission.
+  static bool needsUserActivation = false;
+
   /// Try to reconnect to a previously configured directory.
+  /// If reconnect returns 'NEEDS_ACTIVATION', sets [needsUserActivation] = true
+  /// and returns false. The app should then show a RestoreAccessScreen.
   static Future<bool> tryReconnect() async {
     _prefs ??= await SharedPreferences.getInstance();
     final type = _prefs?.getString(_storageTypeKey);
@@ -60,7 +65,12 @@ class FileSystemStorageService extends StorageService {
     try {
       if (type == 'fsa' || type == 'local') {
         final name = await FileSystemInterop.reconnect();
+        if (name == 'NEEDS_ACTIVATION') {
+          needsUserActivation = true;
+          return false;
+        }
         if (name != null) {
+          needsUserActivation = false;
           await FileSystemInterop.initDirectories();
           return true;
         }

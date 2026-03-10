@@ -22,6 +22,9 @@ external JSPromise<JSString> _useOPFS();
 @JS('organoteFS.reconnect')
 external JSPromise<JSString?> _reconnect();
 
+@JS('organoteFS.requestPermissionInteractive')
+external JSPromise<JSString?> _requestPermissionInteractive();
+
 @JS('organoteFS.getStorageType')
 external String _getStorageType();
 
@@ -138,9 +141,17 @@ class FileSystemInterop {
   }
 
   /// Try to reconnect to a previously saved directory.
-  /// Returns directory name if successful, null otherwise.
+  /// Returns directory name if successful, 'NEEDS_ACTIVATION' if user click
+  /// is required, or null on failure.
   static Future<String?> reconnect() async {
     final result = await _reconnect().toDart;
+    return result?.toDart;
+  }
+
+  /// Request permission interactively (must be called from a user click handler).
+  /// Returns directory name if granted, null otherwise.
+  static Future<String?> requestPermissionInteractive() async {
+    final result = await _requestPermissionInteractive().toDart;
     return result?.toDart;
   }
 

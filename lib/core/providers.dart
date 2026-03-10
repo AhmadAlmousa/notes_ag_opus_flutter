@@ -322,20 +322,23 @@ class SyncTriggerNotifier extends Notifier<int> {
 /// Returns true if sync was reconnected successfully.
 Future<bool> initSync(WidgetRef ref) async {
   final storage = ref.read(storageProvider);
+  final syncService = ref.read(syncServiceProvider);
 
+  // 1. ALWAYS wire up the remote change callback using the root app ref.
+  // This must be outside try/catch and before reconnect so it never uses
+  // a widget-scoped ref that could be unmounted.
+  syncService.onRemoteChange = () {
+    try {
+      ref.read(noteRepoProvider).clearCache();
+      ref.read(templateRepoProvider).clearCache();
+    } catch (_) {}
+    ref.read(syncTriggerProvider.notifier).trigger();
+  };
+
+  // 2. Then attempt reconnection
   try {
-    final syncService = ref.read(syncServiceProvider);
     final reconnected = await syncService.tryReconnect(storage: storage);
     if (!reconnected) return false;
-
-    // Wire up remote change callback
-    syncService.onRemoteChange = () {
-      try {
-        ref.read(noteRepoProvider).clearCache();
-        ref.read(templateRepoProvider).clearCache();
-      } catch (_) {}
-      ref.read(syncTriggerProvider.notifier).trigger();
-    };
 
     // Pull remote data
     await syncService.pullAll();

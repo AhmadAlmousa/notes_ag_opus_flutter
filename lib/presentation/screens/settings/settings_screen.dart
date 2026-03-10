@@ -1097,14 +1097,7 @@ class _SettingsScreenState extends ConsumerState<SettingsScreen>
       return;
     }
 
-    // Wire up remote change callback
-    syncService.onRemoteChange = () {
-      try {
-        ref.read(noteRepoProvider).clearCache();
-        ref.read(templateRepoProvider).clearCache();
-      } catch (_) {}
-      ref.read(syncTriggerProvider.notifier).trigger();
-    };
+    // onRemoteChange is wired up in initSync (root app ref) — not here
 
     if (mounted) {
       showDialog(
