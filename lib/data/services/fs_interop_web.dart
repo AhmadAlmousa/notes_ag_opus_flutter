@@ -25,6 +25,9 @@ external JSPromise<JSString?> _reconnect();
 @JS('organoteFS.requestPermissionInteractive')
 external JSPromise<JSString?> _requestPermissionInteractive();
 
+@JS('organoteFS.listAssetFiles')
+external JSPromise<JSArray<JSObject>> _listAssetFiles();
+
 @JS('organoteFS.getStorageType')
 external String _getStorageType();
 
@@ -153,6 +156,24 @@ class FileSystemInterop {
   static Future<String?> requestPermissionInteractive() async {
     final result = await _requestPermissionInteractive().toDart;
     return result?.toDart;
+  }
+
+  /// List all asset files with their sizes (for sync manifest).
+  /// Returns a map of filename → file size in bytes.
+  static Future<Map<String, int>> listAssets() async {
+    try {
+      final jsArray = await _listAssetFiles().toDart;
+      final map = <String, int>{};
+      for (int i = 0; i < jsArray.length; i++) {
+        final item = jsArray[i];
+        final name = (item as dynamic).name as String;
+        final size = (item as dynamic).size as int;
+        map[name] = size;
+      }
+      return map;
+    } catch (_) {
+      return {};
+    }
   }
 
   /// Initialize notes/ and templates/ directories.

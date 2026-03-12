@@ -1,45 +1,174 @@
+However, the fix you attempted for the Riverpod crash was slightly incomplete, which is why the app still crashes right after [Sync] Reconciliation complete — changes applied.
+
+Here is exactly why it is crashing and the final blueprint to give your coding agent to fix it permanently.
+
+1. The Root Cause of the Crash
+The crash is caused by two severe Riverpod anti-patterns interacting with each other:
+
+The Multiple Execution Bug: In lib/main.dart, you are calling Future.microtask(() => initSync(ref)); directly inside the build method. Every time you change the theme or language, the widget rebuilds and calls initSync again, launching duplicate background syncs.
+
+The WidgetRef Trap: In lib/core/providers.dart, initSync takes a WidgetRef (which belongs to a temporary UI element) and permanently stores it inside the global syncService.onRemoteChange callback. Because initSync is running multiple times, it creates race conditions. When the background sync finishes, the widget that generated that specific WidgetRef has likely already been destroyed/rebuilt, causing Riverpod to panic and throw the Uncaught Error.
+
+2. How to Instruct Your AI Agent
+To fix this, we must completely remove the sync initialization from the UI/Widget layer and place it in a Riverpod FutureProvider. A ProviderRef never dies or unmounts, making it 100% safe for global callbacks.
+
+Copy and paste these exact instructions to your agent:
+
+🔴 Priority 1: Fix the Riverpod WidgetRef Crash
+Passing a WidgetRef into global callbacks or running async tasks inside build methods is causing the app to crash when sync completes. Please make the following architectural changes:
+
+1. Update lib/core/providers.dart:
+Delete the Future<bool> initSync(WidgetRef ref) function entirely. Replace it with a FutureProvider that safely uses a ProviderRef:
+
+Dart
+/// Initializes sync safely in the background.
+/// ProviderRef never unmounts, so this callback will never crash.
+final syncInitProvider = FutureProvider<void>((ref) async {
+  final isConfigured = ref.watch(storageConfiguredProvider);
+  if (!isConfigured) return;
+
+  final storage = ref.read(storageProvider);
+  final syncService = ref.read(syncServiceProvider);
+
+  syncService.onRemoteChange = () {
+    try {
+      ref.read(noteRepoProvider).clearCache();
+      ref.read(templateRepoProvider).clearCache();
+    } catch (_) {}
+    ref.read(syncTriggerProvider.notifier).trigger();
+  };
+
+  try {
+    final reconnected = await syncService.tryReconnect(storage: storage);
+    if (reconnected) {
+      await syncService.pullAll();
+    }
+  } catch (e) {
+    debugPrint('Google Drive sync init failed: $e');
+  }
+});
+2. Update lib/main.dart:
+Remove the Future.microtask(() => initSync(ref)); from the OrganoteApp build method. Instead, simply watch the new provider so Riverpod safely handles the background initialization exactly once:
+
+Dart
+  // Start sync in background (non-blocking) safely via Riverpod
+  ref.watch(syncInitProvider);
+
+  return _SyncLifecycleObserver(
+    // ...
+3. Fix _SyncLifecycleObserver in lib/main.dart:
+Passing WidgetRef ref as a property to _SyncLifecycleObserver is another Riverpod anti-pattern. Change _SyncLifecycleObserver to be a ConsumerStatefulWidget so it manages its own stable ref natively:
+
+Dart
+class _SyncLifecycleObserver extends ConsumerStatefulWidget {
+  const _SyncLifecycleObserver({required this.child});
+  final Widget child;
+
+  @override
+  ConsumerState<_SyncLifecycleObserver> createState() => _SyncLifecycleObserverState();
+}
+
+class _SyncLifecycleObserverState extends ConsumerState<_SyncLifecycleObserver>
+    with WidgetsBindingObserver {
+  // ...
+  @override
+  void didChangeAppLifecycleState(AppLifecycleState state) {
+    // Use the ConsumerState's native 'ref'
+    final syncService = ref.read(syncServiceProvider); 
+    // ...
+  }
+  // ...
+}
+A Note on _withRetryOn401
+When reviewing the updated code, I noticed the agent successfully created the _withRetryOn401 helper method at the very bottom of sync_service.dart, but it is still not using it anywhere.
+
+If the app runs in the background for more than 1 hour, the Google OAuth token will expire, and syncs will start silently failing. You may want to add this to your prompt to the agent:
+
+"Also, you created _withRetryOn401 in sync_service.dart, but forgot to use it. Please wrap all _driveApi!.files... calls (like list, create, get, update, delete) inside await _withRetryOn401(() => _driveApi!.files...); to ensure expired tokens are actually refreshed."
+
+🔴 Priority: Implement Binary Asset Syncing for Images
+Currently, images saved to the assets/ directory are ignored by SyncService and StorageService. Please upgrade the synchronization engine to handle binary files by doing the following:
+
+1. Update Storage Interfaces (storage_service.dart & fs_interop.dart):
+
+Add a method to list all files in the assets directory (e.g., Map<String, List<int>> getAssets() or List<String> listAssets()).
+
+Ensure FileSystemInterop and StorageService can read and return raw bytes (List<int>) for these assets.
+
+2. Upgrade SyncService for Binary Support (sync_service.dart):
+
+pushDocument: Modify the signature to accept either a String or List<int> for the content. If the path starts with assets/, do not use utf8.encode(); upload the raw bytes directly and set the mimeType appropriately (e.g., determine via file extension like image/png, image/jpeg, or default to application/octet-stream). Keep text/markdown for notes and templates.
+
+_downloadFile: Update this method (or create a _downloadBinaryFile variant) to return raw List<int> bytes instead of decoding to a UTF-8 string when downloading an asset.
+
+_saveToStorage: Add handling for path.startsWith('assets/') to route the downloaded bytes to FileSystemInterop.writeBytes().
+
+3. Add Assets to the Sync Manifest (syncAll in sync_service.dart):
+
+During the syncAll() reconciliation phase, build a local manifest for the assets/ directory alongside templates/ and notes/.
+
+Fetch the remote manifest for the assets folder from Google Drive (create the folder if it doesn't exist).
+
+Optimization Note: Since hashing large images locally might be slow, you can store the file size or modified timestamp in the SyncLedger for assets instead of hashing the entire binary content, or just rely on standard remote/local timestamp comparison. Ensure assets are uploaded, downloaded, and deleted following the same 3-way reconciliation rules as markdown files.
 
 
----
+🔴 Priority: Fix Android Auto-Login Popups
+The application is incorrectly showing the Android Credential Manager popup every time the app reconnects or changes themes.
 
-### 🔴 Priority 1: Critical Sync Architecture & Data Integrity (Fix Immediately)
+Update tryReconnect in lib/data/services/sync_service.dart:
+The comment stating that attemptLightweightAuthentication is equivalent to signInSilently on mobile is incorrect—it forces an interactive prompt on Android. You must replace it with the actual signInSilently() method.
 
-The current sync implementation is additive-only, blind to the recycle bin, and relies on a brute-force approach. To prevent data loss, eliminate "zombie files," and ensure a perfect cross-device mirror, implement the following changes to `sync_service.dart`:
+Replace the tryReconnect logic with this:
 
-1. **Implement True Bidirectional Mirroring (The Sync Ledger):** * Create a local "Sync Ledger" (a hidden file or local database table) that tracks the last known state and `modifiedTime` of all successfully synced files.
-* During `syncAll()`, execute a 3-way reconciliation algorithm comparing Local Files, Remote Drive Files, and the Sync Ledger to accurately detect additions, modifications, and deletions (tombstones).
-* Do not blindly overwrite or skip missing files. If a file is in the ledger but missing locally, remove it from Google Drive. If it is in the ledger but missing remotely, delete it locally.
+Dart
+  Future<bool> tryReconnect({required StorageService storage}) async {
+    _storage = storage;
+    try {
+      await _ensureInitialized();
 
+      // On web, don't auto-trigger the sign-in UI.
+      if (kIsWeb) return false;
 
-2. **Fix the Recycle Bin "Zombie File" Bug:** * **The Problem:** The `SyncService` ignores the `getTrash()` list. If a note is moved to the trash locally, `pullAll` immediately resurrects it by re-downloading the remote copy from Google Drive because the remote file was never explicitly deleted.
-* **The Solution:** Stop storing Markdown trash payloads in `SharedPreferences`. Implement the Recycle Bin as an actual hidden `.trash/` folder locally. During the `syncAll` 3-way reconciliation, if a local file is moved to `.trash/`, the Sync Ledger must register this as a deletion. The app must then use the Drive API to update the file's remote status by executing `driveApi.files.update(fileId, drive.File()..trashed = true)`. This natively moves the file to the user's Google Drive trash bin.
+      // On mobile: Must use signInSilently to avoid forcing the Credential Manager popup
+      final account = await _googleSignIn.signInSilently();
+      if (account == null) return false;
 
+      final result = await _obtainDriveClientFrom(account);
+      return result;
+    } catch (_) {
+      return false;
+    }
+  }
 
-3. **Implement Timestamp Delta Sync:** Stop iterating through the entire database with a basic `if (existing != content)` check. Compare the local file's `updatedAt` timestamp against the Google Drive `modifiedTime`. Only download if the remote file is newer; only upload if the local file is newer.
-4. **Implement Drive API Pagination (`nextPageToken`):** The `_listFiles` and `_listFolders` methods currently max out at 100 items by default. Wrap all Drive API `list` calls in a `do-while` loop handling `nextPageToken` until it returns null to prevent silent data loss for larger vaults.
-5. **Handle OAuth Token Expiration (401 Errors):** The `_driveApi` instance is currently held indefinitely after login, but Google tokens expire after 1 hour, causing background syncs to fail silently. Implement a retry mechanism: if a 401 error occurs, fetch a fresh token via `signInSilently()` and reconstruct the `DriveApi` client before retrying the request.
-6. **Replace 5-Minute Polling with App Lifecycle Hooks:** Remove the `Timer.periodic` polling. Implement Flutter's `WidgetsBindingObserver` to trigger a sync when `AppLifecycleState` switches to `resumed` (pull) or `paused` (push).
+  🔴 Priority: Clean Up Google SDK & Authorization Flows
+The current Google Sign-In and Drive API implementation mixes interactive flows with silent background tasks, causing UI hangs and rogue popups. Please implement these strict architectural boundaries:
 
----
+1. Fix _obtainDriveClientFrom in sync_service.dart:
 
-### 🔴 Priority 2: Authentication & Cross-Platform UX Bugs
+Add a bool silent = false parameter.
 
-The Google Sign-In flow suffers from architectural misplacements that cause erratic popups and fractured states.
+If silent is true, do not call authClient.authorizeScopes(). If authorizationForScopes() returns null during a silent check, simply return false so the app gracefully defaults to a disconnected state requiring manual user interaction.
 
-1. **Remove UI-Coupled Auth Side Effects (The Theme Bug):** In `SettingsScreen`, the `_setupWebSignIn` logic is triggered directly inside the `build()` method (`_webSignInFuture ??= _setupWebSignIn(...)`). Changing the theme rebuilds the widget tree and blindly re-triggers the auth flow. Move all auth initiation to `initState()` or a dedicated Riverpod controller.
-2. **Fix Mobile Auto-Login Popups:** Update `tryReconnect` in `sync_service.dart`. Do not use `attemptLightweightAuthentication()` for mobile. Use `await _googleSignIn.signInSilently()` for iOS and Android to restore sessions without forcing an interactive popup on every launch.
-3. **Fix Cross-Platform Client ID Configuration:** Ensure `_googleSignIn.initialize()` conditionally applies the `clientId` ONLY for `kIsWeb` and `Platform.isIOS`. Provide `null` for Android so it properly reads from `google-services.json`.
-4. **Remove Web Auth 120-Second Time Bomb:** Remove the strict `.timeout(const Duration(seconds: 120))` on the web login `Completer`. Rely on the `google_sign_in_web` streams to definitively report success or failure without artificial race conditions.
+Update tryReconnect to call _obtainDriveClientFrom(account, silent: true).
 
----
+2. Fix the 401 Token Refresh Wrapper in sync_service.dart:
 
-### 🟡 Priority 3: State Management & Scalability
+Inside _withRetryOn401, remove attemptLightweightAuthentication().
 
-These updates will future-proof the app's performance and code maintainability as user data grows.
+Replace it with platform-aware logic: Use signInSilently() for mobile (iOS/Android) and attemptLightweightAuthentication() only for Web.
 
-1. **Refactor `SyncService` to a Riverpod `AsyncNotifier`:** Eliminate the Singleton pattern (`SyncService.instance`). Implement `SyncService` as a Riverpod `AsyncNotifierProvider` that yields granular states (e.g., `disconnected`, `syncing`, `connected`, `error`). Remove manual `setState(() {})` calls from `SettingsScreen` and strictly use `ref.watch()`.
-2. **Graceful Permission Handling:** If a user logs in but unchecks the Google Drive permission box, `authorizationForScopes` will fail. Update the state to reflect an "Insufficient Permissions" error and trigger a UI prompt asking the user to re-authenticate and grant Drive access.
-3. **Stop Abusing `SharedPreferences` for File Storage:** `StorageService` currently serializes the entire database into JSON strings (`_prefs?.setString(...)`). This violates web limits and causes mobile memory jank. Strip `SharedPreferences` down to basic settings (theme, defaults). Rely strictly on `dart:io` and OPFS for markdown file content, and implement `sqflite`/`drift` for the search indexing layer.
-4. **Batch API Requests:** Process `pushAll` and `pullAll` uploads/downloads concurrently using `Future.wait()`, batched in groups of 5-10, to dramatically speed up sync times and respect rate limits. Transition to Google Drive's `changes.list` API endpoint instead of scanning all folders manually.
+Ensure ALL Drive API calls (list, get, create, update, delete) inside sync_service.dart are wrapped in this _withRetryOn401 method. Right now, it is defined but not utilized.
 
----
+3. Fix the Web Auth "Forever Loading" Trap in sync_service.dart:
+
+Remove the Completer<bool> from the kIsWeb block inside the signIn() method.
+
+On Web, signIn() should ONLY register the authenticationEvents listener (if not already registered) and call attemptLightweightAuthentication(). It should immediately return true (or void) rather than awaiting a stream event that might never happen if the user dismisses the prompt.
+
+State changes must be pushed to stateNotifier.value directly from inside the stream listener.
+
+4. Stop Auto-Triggering Auth in SettingsScreen.dart:
+
+In _buildGoogleSignInButton, delete the _setupWebSignIn callback entirely.
+
+The app should simply return gsi_button.buildGoogleSignInButtonPlatform(). Google's native iframe handles the click events. The syncServiceProvider listening to authenticationEvents in the background will automatically detect the success and update the Riverpod state without manual UI intervention.

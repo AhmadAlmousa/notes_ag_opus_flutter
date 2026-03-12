@@ -318,15 +318,16 @@ class SyncTriggerNotifier extends Notifier<int> {
   void trigger() => state++;
 }
 
-/// Try to reconnect Google Drive sync from a previous session.
-/// Returns true if sync was reconnected successfully.
-Future<bool> initSync(WidgetRef ref) async {
+/// Initializes sync safely in the background.
+/// ProviderRef never unmounts, so the onRemoteChange callback will never crash.
+final syncInitProvider = FutureProvider<void>((ref) async {
+  final isConfigured = ref.watch(storageConfiguredProvider);
+  if (!isConfigured) return;
+
   final storage = ref.read(storageProvider);
   final syncService = ref.read(syncServiceProvider);
 
-  // 1. ALWAYS wire up the remote change callback using the root app ref.
-  // This must be outside try/catch and before reconnect so it never uses
-  // a widget-scoped ref that could be unmounted.
+  // Wire up the remote change callback using a ProviderRef (never dies).
   syncService.onRemoteChange = () {
     try {
       ref.read(noteRepoProvider).clearCache();
@@ -335,20 +336,16 @@ Future<bool> initSync(WidgetRef ref) async {
     ref.read(syncTriggerProvider.notifier).trigger();
   };
 
-  // 2. Then attempt reconnection
+  // Attempt silent reconnection
   try {
     final reconnected = await syncService.tryReconnect(storage: storage);
-    if (!reconnected) return false;
-
-    // Pull remote data
-    await syncService.pullAll();
-
-    return true;
+    if (reconnected) {
+      await syncService.pullAll();
+    }
   } catch (e) {
     debugPrint('Google Drive sync init failed: $e');
-    return false;
   }
-}
+});
 
 // ---------------------------------------------------------------------------
 // Helpers

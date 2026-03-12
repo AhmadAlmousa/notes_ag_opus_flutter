@@ -1020,45 +1020,14 @@ class _SettingsScreenState extends ConsumerState<SettingsScreen>
 
   // ── FedCM / Google Sign-In helpers ─────────────────────────────────
 
-  bool _webSignInInitialized = false;
-
   /// Build Google's native FedCM sign-in button for web.
-  /// P2.1: Auth setup is guarded by _webSignInInitialized flag so
-  /// theme changes and widget rebuilds don't re-trigger the auth flow.
+  /// The syncService auth listener handles auth events automatically.
   Widget _buildGoogleSignInButton(
     dynamic syncService,
     dynamic storage,
   ) {
     if (!kIsWeb) return const SizedBox.shrink();
-
-    // One-time setup: start listening for auth events.
-    // Guarded by flag — not affected by widget rebuilds.
-    if (!_webSignInInitialized) {
-      _webSignInInitialized = true;
-      // Use addPostFrameCallback to avoid triggering during build
-      WidgetsBinding.instance.addPostFrameCallback((_) {
-        if (mounted) _setupWebSignIn(syncService, storage);
-      });
-    }
-
-    // Render Google's native FedCM sign-in button (purely visual)
     return _buildWebRenderButton();
-  }
-
-  Future<void> _setupWebSignIn(dynamic syncService, dynamic storage) async {
-    final success = await syncService.signIn(storage: storage);
-    if (success) {
-      await _handlePostSignIn(syncService, storage);
-      if (mounted) {
-        ScaffoldMessenger.of(context).showSnackBar(
-          const SnackBar(
-            content: Text('Connected to Google Drive!'),
-            backgroundColor: Colors.green,
-          ),
-        );
-        setState(() {});
-      }
-    }
   }
 
   /// Returns Google's native renderButton widget.

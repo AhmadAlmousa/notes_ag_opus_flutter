@@ -100,11 +100,10 @@ class OrganoteApp extends ConsumerWidget {
         final isOled = ref.watch(isOledModeProvider);
         final locale = ref.watch(localeProvider);
 
-        // Start sync in background (non-blocking)
-        Future.microtask(() => initSync(ref));
+        // Start sync in background safely via Riverpod (never re-fires on rebuild)
+        ref.watch(syncInitProvider);
 
         return _SyncLifecycleObserver(
-          ref: ref,
           child: MaterialApp.router(
             title: 'Organote',
             debugShowCheckedModeBanner: false,
@@ -123,17 +122,17 @@ class OrganoteApp extends ConsumerWidget {
 }
 
 /// P1.6: Lifecycle observer that triggers sync on app foreground/background.
-/// Replaces the 5-minute Timer.periodic polling.
-class _SyncLifecycleObserver extends StatefulWidget {
-  const _SyncLifecycleObserver({required this.ref, required this.child});
-  final WidgetRef ref;
+/// Uses ConsumerStatefulWidget for a stable ref that never unmounts.
+class _SyncLifecycleObserver extends ConsumerStatefulWidget {
+  const _SyncLifecycleObserver({required this.child});
   final Widget child;
 
   @override
-  State<_SyncLifecycleObserver> createState() => _SyncLifecycleObserverState();
+  ConsumerState<_SyncLifecycleObserver> createState() =>
+      _SyncLifecycleObserverState();
 }
 
-class _SyncLifecycleObserverState extends State<_SyncLifecycleObserver>
+class _SyncLifecycleObserverState extends ConsumerState<_SyncLifecycleObserver>
     with WidgetsBindingObserver {
   @override
   void initState() {
@@ -149,16 +148,14 @@ class _SyncLifecycleObserverState extends State<_SyncLifecycleObserver>
 
   @override
   void didChangeAppLifecycleState(AppLifecycleState state) {
-    final syncService = widget.ref.read(syncServiceProvider);
+    final syncService = ref.read(syncServiceProvider);
     if (!syncService.isConnected) return;
 
     if (state == AppLifecycleState.resumed) {
-      // App came to foreground → pull remote changes
       debugPrint('[Lifecycle] App resumed → pulling remote changes');
       syncService.pullAll();
     } else if (state == AppLifecycleState.paused ||
         state == AppLifecycleState.inactive) {
-      // App going to background → push local changes
       debugPrint('[Lifecycle] App pausing → pushing local changes');
       syncService.pushAll();
     }

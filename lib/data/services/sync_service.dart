@@ -12,6 +12,7 @@ import 'package:shared_preferences/shared_preferences.dart';
 
 import 'storage_service.dart';
 import 'sync_ledger.dart';
+import 'fs_interop.dart';
 
 /// Callback type for notifying the UI about remote changes.
 typedef OnRemoteChange = void Function();
@@ -103,7 +104,12 @@ class SyncService {
   }
 
   /// Obtain an authenticated HTTP client from a GoogleSignInAccount.
-  Future<bool> _obtainDriveClientFrom(GoogleSignInAccount account) async {
+  /// When [silent] is true (e.g., during tryReconnect), skip the interactive
+  /// authorizeScopes() popup. If scopes aren't granted, return false gracefully.
+  Future<bool> _obtainDriveClientFrom(
+    GoogleSignInAccount account, {
+    bool silent = false,
+  }) async {
     try {
       _currentEmail = account.email;
 
@@ -113,12 +119,15 @@ class SyncService {
       // First try without prompting
       var authorization = await authClient.authorizationForScopes(_driveScopes);
       if (authorization == null) {
+        if (silent) {
+          // During silent reconnect, don't show popup
+          debugPrint('[Sync] Silent auth: scopes not granted, skipping');
+          return false;
+        }
         // Prompt user for scope authorization
-        // This opens a popup on web which may be blocked by COOP headers
         try {
           authorization = await authClient.authorizeScopes(_driveScopes);
         } catch (e) {
-          // On web with COOP headers, the popup is blocked.
           _lastAuthError = 'Drive authorization popup was blocked. '
               'If you are using a reverse proxy, remove the '
               'Cross-Origin-Opener-Policy header to allow sync.';
@@ -157,9 +166,8 @@ class SyncService {
       await _ensureInitialized();
 
       if (kIsWeb) {
-        // On web, authenticate() is not supported.
-        // P2.4: Removed 120s timeout — let auth stream report naturally.
-        final completer = Completer<bool>();
+        // On web: register auth listener (fire-and-forget).
+        // State changes are pushed from the listener, no Completer needed.
         _authSubscription?.cancel();
         _authSubscription = _googleSignIn.authenticationEvents.listen(
           (event) async {
@@ -167,19 +175,22 @@ class SyncService {
               final account = event.user;
               final result = await _obtainDriveClientFrom(account);
               if (result) {
-                // Initial sync on sign-in
                 Future.microtask(() => syncAll());
+              } else {
+                stateNotifier.value = SyncState.error;
               }
-              if (!completer.isCompleted) completer.complete(result);
             }
           },
           onError: (e) {
             debugPrint('[Sync] Auth stream error: $e');
-            if (!completer.isCompleted) completer.complete(false);
+            stateNotifier.value = SyncState.error;
+            _lastAuthError = 'Auth stream error: $e';
           },
         );
+        // Trigger lightweight check — if cached session exists, the listener fires
         _googleSignIn.attemptLightweightAuthentication();
-        return await completer.future;
+        // Return true — the listener will handle state
+        return true;
       }
 
       // Non-web: use standard authenticate()
@@ -189,7 +200,6 @@ class SyncService {
 
       final result = await _obtainDriveClientFrom(account);
       if (result) {
-        // Initial sync on sign-in
         Future.microtask(() => syncAll());
       }
       return result;
@@ -212,8 +222,9 @@ class SyncService {
   }
 
   /// Try to silently reconnect (e.g., on app restart).
-  /// P2.2: On web, skip auto-login entirely. On mobile, use lightweight auth
-  /// which restores cached sessions without interactive UI.
+  /// Uses attemptLightweightAuthentication for non-interactive silent auth.
+  /// Combined with _obtainDriveClientFrom(silent: true), this avoids any popup.
+  /// On web, returns false (auth is handled by the GSI button).
   Future<bool> tryReconnect({required StorageService storage}) async {
     _storage = storage;
     try {
@@ -223,15 +234,15 @@ class SyncService {
       if (kIsWeb) return false;
 
       // On mobile: attemptLightweightAuthentication restores cached sessions
-      // without showing interactive UI (equivalent to old signInSilently).
+      // without forcing any interactive UI or Credential Manager popup.
       final maybeFuture = _googleSignIn.attemptLightweightAuthentication();
       if (maybeFuture == null) return false;
 
       final account = await maybeFuture;
       if (account == null) return false;
 
-      final result = await _obtainDriveClientFrom(account);
-      return result;
+      // silent: true prevents authorizeScopes popup
+      return await _obtainDriveClientFrom(account, silent: true);
     } catch (_) {
       return false;
     }
@@ -302,20 +313,20 @@ class SyncService {
           );
 
           if (existing != null) {
-            await _driveApi!.files.update(
+            await _withRetryOn401(() => _driveApi!.files.update(
               drive.File()..modifiedTime = DateTime.now().toUtc(),
               existing.id!,
               uploadMedia: media,
-            );
+            ));
           } else {
-            await _driveApi!.files.create(
+            await _withRetryOn401(() => _driveApi!.files.create(
               drive.File()
                 ..name = fileName
                 ..parents = [parentId]
                 ..mimeType = 'text/markdown'
                 ..modifiedTime = DateTime.now().toUtc(),
               uploadMedia: media,
-            );
+            ));
           }
 
           debugPrint('[Sync] Pushed: $path');
@@ -343,7 +354,7 @@ class SyncService {
         final fileName = path.split('/').last;
         final existing = await _findFile(fileName, parentId);
         if (existing != null) {
-          await _driveApi!.files.delete(existing.id!);
+          await _withRetryOn401(() => _driveApi!.files.delete(existing.id!));
         }
         debugPrint('[Sync] Deleted remotely: $path');
         return;
@@ -475,10 +486,10 @@ class SyncService {
           // P1.2: If this file is in local trash, trash it on Drive instead
           if (trashKeys.contains(path)) {
             try {
-              await _driveApi!.files.update(
+              await _withRetryOn401(() => _driveApi!.files.update(
                 drive.File()..trashed = true,
                 remoteFile.id!,
-              );
+              ));
               debugPrint('[Sync] Trashed on Drive (zombie): $path');
             } catch (e) {
               debugPrint('[Sync] Failed to trash on Drive: $e');
@@ -574,10 +585,10 @@ class SyncService {
         else if (ledgerEntry != null && localContent == null && remoteFile != null) {
           // File was deleted locally → delete from Drive
           try {
-            await _driveApi!.files.update(
+            await _withRetryOn401(() => _driveApi!.files.update(
               drive.File()..trashed = true,
               remoteFile.id!,
-            );
+            ));
             debugPrint('[Sync] Trashed on Drive (local deletion): $path');
           } catch (e) {
             debugPrint('[Sync] Failed to trash on Drive: $e');
@@ -598,6 +609,48 @@ class SyncService {
         else if (ledgerEntry != null && localContent == null && remoteFile == null) {
           await ledger.removeEntry(path);
         }
+      }
+
+      // ── Asset reconciliation (binary files) ──
+      try {
+        final localAssets = await FileSystemInterop.listAssets();
+        final assetsFolderId = await _findFolder('assets', _rootFolderId!);
+
+        // Build remote asset manifest
+        final remoteAssets = <String, drive.File>{};
+        if (assetsFolderId != null) {
+          final files = await _listFiles(assetsFolderId);
+          for (final f in files) {
+            if (f.name != null) remoteAssets[f.name!] = f;
+          }
+        }
+
+        final allAssetNames = <String>{
+          ...localAssets.keys,
+          ...remoteAssets.keys,
+        };
+
+        for (final name in allAssetNames) {
+          final localSize = localAssets[name];
+          final remoteFile = remoteAssets[name];
+
+          if (remoteFile != null && localSize == null) {
+            // New remote asset → download
+            final bytes = await _downloadBinaryFile(remoteFile.id!);
+            if (bytes != null) {
+              await FileSystemInterop.writeBytes('assets/$name', bytes);
+              hasChanges = true;
+              debugPrint('[Sync] Downloaded asset: $name');
+            }
+          } else if (localSize != null && remoteFile == null) {
+            // New local asset → upload
+            await pushAsset(name);
+            hasChanges = true;
+          }
+          // Both exist: skip (assets rarely change; could add size comparison)
+        }
+      } catch (e) {
+        debugPrint('[Sync] Asset sync error (non-fatal): $e');
       }
 
       if (hasChanges) {
@@ -652,6 +705,79 @@ class SyncService {
     }
   }
 
+  /// Push a binary asset to Drive (images, etc.)
+  Future<void> pushAsset(String fileName) async {
+    if (_driveApi == null || _rootFolderId == null) return;
+
+    try {
+      final bytes = await FileSystemInterop.readBytes('assets/$fileName');
+      final assetsFolderId = await _getOrCreateFolder('assets',
+          parentId: _rootFolderId);
+
+      // Determine mimeType from extension
+      final ext = fileName.split('.').last.toLowerCase();
+      final mimeType = _mimeTypeForExtension(ext);
+
+      final media = drive.Media(
+        Stream.value(bytes),
+        bytes.length,
+      );
+
+      final existing = await _findFile(fileName, assetsFolderId);
+      if (existing != null) {
+        await _withRetryOn401(() => _driveApi!.files.update(
+          drive.File()..modifiedTime = DateTime.now().toUtc(),
+          existing.id!,
+          uploadMedia: media,
+        ));
+      } else {
+        await _withRetryOn401(() => _driveApi!.files.create(
+          drive.File()
+            ..name = fileName
+            ..parents = [assetsFolderId]
+            ..mimeType = mimeType
+            ..modifiedTime = DateTime.now().toUtc(),
+          uploadMedia: media,
+        ));
+      }
+      debugPrint('[Sync] Pushed asset: $fileName');
+    } catch (e) {
+      debugPrint('[Sync] pushAsset error: $e');
+    }
+  }
+
+  /// Download a binary file by ID — returns raw bytes.
+  Future<List<int>?> _downloadBinaryFile(String fileId) async {
+    try {
+      final response = await _withRetryOn401(() => _driveApi!.files.get(
+        fileId,
+        downloadOptions: drive.DownloadOptions.fullMedia,
+      )) as drive.Media;
+
+      final bytes = <int>[];
+      await for (final chunk in response.stream) {
+        bytes.addAll(chunk);
+      }
+      return bytes;
+    } catch (e) {
+      debugPrint('[Sync] Download binary failed: $e');
+      return null;
+    }
+  }
+
+  /// Get mimeType from file extension.
+  String _mimeTypeForExtension(String ext) {
+    switch (ext) {
+      case 'png': return 'image/png';
+      case 'jpg': case 'jpeg': return 'image/jpeg';
+      case 'gif': return 'image/gif';
+      case 'webp': return 'image/webp';
+      case 'svg': return 'image/svg+xml';
+      case 'pdf': return 'application/pdf';
+      default: return 'application/octet-stream';
+    }
+  }
+
   // ── Helpers ─────────────────────────────────────────────────────────
 
   /// Get or create the "Organote" root folder. Uses cache + locks to prevent duplicates.
@@ -677,11 +803,11 @@ class SyncService {
     try {
       final q = "name = '$name' and mimeType = 'application/vnd.google-apps.folder'"
           " and '$parent' in parents and trashed = false";
-      final result = await _driveApi!.files.list(
+      final result = await _withRetryOn401(() => _driveApi!.files.list(
         q: q,
         spaces: 'drive',
         $fields: 'files(id, name)',
-      );
+      ));
 
       if (result.files != null && result.files!.isNotEmpty) {
         final folderId = result.files!.first.id!;
@@ -695,7 +821,7 @@ class SyncService {
         ..name = name
         ..mimeType = 'application/vnd.google-apps.folder'
         ..parents = [parent];
-      final created = await _driveApi!.files.create(folder);
+      final created = await _withRetryOn401(() => _driveApi!.files.create(folder));
       final newId = created.id!;
       _folderIdCache[cacheKey] = newId;
 
@@ -719,11 +845,11 @@ class SyncService {
   Future<String?> _findFolder(String name, String parentId) async {
     final q = "name = '$name' and mimeType = 'application/vnd.google-apps.folder'"
         " and '$parentId' in parents and trashed = false";
-    final result = await _driveApi!.files.list(
+    final result = await _withRetryOn401(() => _driveApi!.files.list(
       q: q,
       spaces: 'drive',
       $fields: 'files(id, name)',
-    );
+    ));
     if (result.files != null && result.files!.isNotEmpty) {
       return result.files!.first.id!;
     }
@@ -735,11 +861,11 @@ class SyncService {
     final q = "name = '$name' and '$parentId' in parents"
         " and mimeType != 'application/vnd.google-apps.folder'"
         " and trashed = false";
-    final result = await _driveApi!.files.list(
+    final result = await _withRetryOn401(() => _driveApi!.files.list(
       q: q,
       spaces: 'drive',
       $fields: 'files(id, name, modifiedTime)',
-    );
+    ));
     if (result.files != null && result.files!.isNotEmpty) {
       return result.files!.first;
     }
@@ -752,7 +878,7 @@ class SyncService {
     final allFiles = <drive.File>[];
     String? pageToken;
     do {
-      final result = await _driveApi!.files.list(
+      final result = await _withRetryOn401(() => _driveApi!.files.list(
         q: "'$parentId' in parents"
             " and mimeType != 'application/vnd.google-apps.folder'"
             " and trashed = false",
@@ -760,7 +886,7 @@ class SyncService {
         pageSize: 100,
         spaces: 'drive',
         $fields: 'nextPageToken, files(id, name, modifiedTime)',
-      );
+      ));
       allFiles.addAll(result.files ?? []);
       pageToken = result.nextPageToken;
     } while (pageToken != null);
@@ -773,7 +899,7 @@ class SyncService {
     final allFolders = <drive.File>[];
     String? pageToken;
     do {
-      final result = await _driveApi!.files.list(
+      final result = await _withRetryOn401(() => _driveApi!.files.list(
         q: "'$parentId' in parents"
             " and mimeType = 'application/vnd.google-apps.folder'"
             " and trashed = false",
@@ -781,7 +907,7 @@ class SyncService {
         pageSize: 100,
         spaces: 'drive',
         $fields: 'nextPageToken, files(id, name)',
-      );
+      ));
       allFolders.addAll(result.files ?? []);
       pageToken = result.nextPageToken;
     } while (pageToken != null);
@@ -806,10 +932,10 @@ class SyncService {
   /// Download a file's text content by ID.
   Future<String?> _downloadFile(String fileId) async {
     try {
-      final response = await _driveApi!.files.get(
+      final response = await _withRetryOn401(() => _driveApi!.files.get(
         fileId,
         downloadOptions: drive.DownloadOptions.fullMedia,
-      ) as drive.Media;
+      )) as drive.Media;
 
       final bytes = <int>[];
       await for (final chunk in response.stream) {
@@ -830,13 +956,11 @@ class SyncService {
     } on AccessDeniedException catch (_) {
       debugPrint('[Sync] 401 — attempting token refresh...');
       try {
-        // Try silent re-auth
+        // attemptLightweightAuthentication is non-interactive on all platforms
         final maybeFuture = _googleSignIn.attemptLightweightAuthentication();
-        if (maybeFuture != null) {
-          final account = await maybeFuture;
-          if (account != null) {
-            await _obtainDriveClientFrom(account);
-          }
+        final account = maybeFuture != null ? await maybeFuture : null;
+        if (account != null) {
+          await _obtainDriveClientFrom(account, silent: true);
         }
         return await action();
       } catch (retryError) {

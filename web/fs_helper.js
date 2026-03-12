@@ -300,11 +300,50 @@
             await Promise.all(promises);
         },
 
-        // Initialize - ensure notes/ and templates/ directories exist
+        // List all asset files with their sizes (for sync manifest)
+        listAssetFiles: async function () {
+            const assets = [];
+            try {
+                const dir = await this._getDir(['assets'], false);
+                for await (const [name, handle] of dir.entries()) {
+                    if (handle.kind === 'file') {
+                        const file = await handle.getFile();
+                        assets.push({ name: name, size: file.size });
+                    }
+                }
+            } catch (e) {
+                // assets dir doesn't exist yet
+            }
+            return assets;
+        },
+
+        // Read a file as raw ArrayBuffer (for binary assets)
+        readFileBytes: async function (path) {
+            const parts = path.split('/');
+            const fileName = parts.pop();
+            const dir = await this._getDir(parts, false);
+            const fileHandle = await dir.getFileHandle(fileName);
+            const file = await fileHandle.getFile();
+            return await file.arrayBuffer();
+        },
+
+        // Write raw bytes to a file (for binary assets)
+        writeFileBytes: async function (path, arrayBuffer) {
+            const parts = path.split('/');
+            const fileName = parts.pop();
+            const dir = await this._getDir(parts, true);
+            const fileHandle = await dir.getFileHandle(fileName, { create: true });
+            const writable = await fileHandle.createWritable();
+            await writable.write(arrayBuffer);
+            await writable.close();
+        },
+
+        // Initialize - ensure notes/, templates/, and assets/ directories exist
         initDirectories: async function () {
             if (!this._rootHandle) throw new Error('No directory selected');
             await this._rootHandle.getDirectoryHandle('notes', { create: true });
             await this._rootHandle.getDirectoryHandle('templates', { create: true });
+            await this._rootHandle.getDirectoryHandle('assets', { create: true });
         },
 
         // Disconnect current storage

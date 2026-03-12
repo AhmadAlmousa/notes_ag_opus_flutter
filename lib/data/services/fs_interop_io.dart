@@ -109,6 +109,23 @@ class FileSystemInterop {
     return null;
   }
 
+  /// List all asset files with their sizes (for sync manifest).
+  /// Returns a map of filename → file size in bytes.
+  static Future<Map<String, int>> listAssets() async {
+    if (_rootPath == null) return {};
+    final assetsDir = Directory(p.join(_rootPath!, 'assets'));
+    if (!assetsDir.existsSync()) return {};
+
+    final map = <String, int>{};
+    await for (final entity in assetsDir.list()) {
+      if (entity is File) {
+        final name = p.basename(entity.path);
+        map[name] = await entity.length();
+      }
+    }
+    return map;
+  }
+
   /// Initialize notes/, templates/, and assets/ directories.
   static Future<void> initDirectories() async {
     if (_rootPath == null) return;
