@@ -329,11 +329,15 @@ final syncInitProvider = FutureProvider<void>((ref) async {
 
   // Wire up the remote change callback using a ProviderRef (never dies).
   syncService.onRemoteChange = () {
-    try {
-      ref.read(noteRepoProvider).clearCache();
-      ref.read(templateRepoProvider).clearCache();
-    } catch (_) {}
-    ref.read(syncTriggerProvider.notifier).trigger();
+    Future.microtask(() {
+      try {
+        ref.read(noteRepoProvider).clearCache();
+        ref.read(templateRepoProvider).clearCache();
+        ref.read(syncTriggerProvider.notifier).trigger();
+      } catch (e) {
+        debugPrint('[Sync] Ignored error in onRemoteChange (likely disposed ref): $e');
+      }
+    });
   };
 
   // Attempt silent reconnection

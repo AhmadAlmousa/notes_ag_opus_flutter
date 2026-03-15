@@ -12,10 +12,6 @@ import '../../../core/providers.dart';
 import '../../../core/export_import_service.dart';
 import '../../../core/theme/app_theme.dart';
 import '../../widgets/dialogs/sync_conflict_dialog.dart';
-import '../../widgets/google_sign_in_button_stub.dart'
-    if (dart.library.js_interop) '../../widgets/google_sign_in_button_web.dart'
-    as gsi_button;
-
 
 /// Settings screen.
 class SettingsScreen extends ConsumerStatefulWidget {
@@ -838,12 +834,6 @@ class _SettingsScreenState extends ConsumerState<SettingsScreen>
 
           // Action buttons
           if (!isConnected) ...[
-            if (kIsWeb) ...[
-              // Web: Use Google's native FedCM button (no popups, immune to COOP/COEP)
-              Center(
-                child: _buildGoogleSignInButton(syncService, storage),
-              ),
-            ] else ...[
             SizedBox(
               width: double.infinity,
               child: ElevatedButton.icon(
@@ -873,7 +863,6 @@ class _SettingsScreenState extends ConsumerState<SettingsScreen>
                 ),
               ),
             ),
-            ],
           ] else ...[
             Row(
               children: [
@@ -1018,22 +1007,7 @@ class _SettingsScreenState extends ConsumerState<SettingsScreen>
     }
   }
 
-  // ── FedCM / Google Sign-In helpers ─────────────────────────────────
-
-  /// Build Google's native FedCM sign-in button for web.
-  /// The syncService auth listener handles auth events automatically.
-  Widget _buildGoogleSignInButton(
-    dynamic syncService,
-    dynamic storage,
-  ) {
-    if (!kIsWeb) return const SizedBox.shrink();
-    return _buildWebRenderButton();
-  }
-
-  /// Returns Google's native renderButton widget.
-  Widget _buildWebRenderButton() {
-    return gsi_button.buildGoogleSignInButtonPlatform();
-  }
+  // ── Helpers ─────────────────────────────────
 
   /// Common post-sign-in logic: conflict dialog, remote change callback, initial pull.
   Future<void> _handlePostSignIn(dynamic syncService, dynamic storage) async {
@@ -1072,22 +1046,27 @@ class _SettingsScreenState extends ConsumerState<SettingsScreen>
       showDialog(
         context: context,
         barrierDismissible: false,
-        builder: (context) => const AlertDialog(
-          content: Row(
-            children: [
-              CircularProgressIndicator(),
-              SizedBox(width: 16),
-              Text('Syncing with Google Drive...'),
-            ],
+        builder: (context) => const PopScope(
+          canPop: false,
+          child: AlertDialog(
+            content: Row(
+              children: [
+                CircularProgressIndicator(),
+                SizedBox(width: 16),
+                Text('Syncing with Google Drive...'),
+              ],
+            ),
           ),
         ),
       );
     }
 
-    await syncService.pullAll();
-
-    if (mounted) {
-      Navigator.pop(context); // close dialog
+    try {
+      await syncService.pullAll();
+    } finally {
+      if (mounted) {
+        Navigator.of(context, rootNavigator: true).pop(); // close dialog firmly
+      }
     }
 
     // State auto-updates via syncStateProvider

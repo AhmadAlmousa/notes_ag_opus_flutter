@@ -1,3 +1,4 @@
+import 'dart:ui';
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:flutter_localizations/flutter_localizations.dart';
@@ -13,6 +14,17 @@ import 'presentation/screens/setup/setup_screen.dart';
 
 void main() {
   WidgetsFlutterBinding.ensureInitialized();
+
+  FlutterError.onError = (details) {
+    debugPrint('Flutter Error: ${details.exception}\n${details.stack}');
+  };
+
+  PlatformDispatcher.instance.onError = (error, stack) {
+    debugPrint('Uncaught Dart Error: $error\n$stack');
+    // Prevents app from crashing entirely (white screen) in release mode
+    return true; 
+  };
+
   runApp(const ProviderScope(child: OrganoteApp()));
 }
 

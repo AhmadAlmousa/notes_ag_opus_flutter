@@ -9,6 +9,26 @@ import 'package:googleapis/drive/v3.dart' as drive;
 import 'package:googleapis_auth/googleapis_auth.dart' show AccessDeniedException;
 import 'package:extension_google_sign_in_as_googleapis_auth/extension_google_sign_in_as_googleapis_auth.dart';
 import 'package:shared_preferences/shared_preferences.dart';
+import 'package:http/http.dart' as http;
+
+class _TokenAuthClient extends http.BaseClient {
+  final String _accessToken;
+  final http.Client _inner = http.Client();
+
+  _TokenAuthClient(this._accessToken);
+
+  @override
+  Future<http.StreamedResponse> send(http.BaseRequest request) {
+    request.headers['Authorization'] = 'Bearer $_accessToken';
+    return _inner.send(request);
+  }
+  
+  @override
+  void close() {
+    _inner.close();
+    super.close();
+  }
+}
 
 import 'storage_service.dart';
 import 'sync_ledger.dart';
@@ -52,7 +72,6 @@ class SyncService {
   StorageService? _storage;
   String? _rootFolderId; // "Organote" folder ID
   String? _currentEmail;
-  StreamSubscription<GoogleSignInAuthenticationEvent>? _authSubscription;
   Timer? _pollTimer;
   Timer? _syncDebounceTimer;
   static const _pollInterval = Duration(minutes: 5);
@@ -67,6 +86,12 @@ class SyncService {
 
   /// Sequential push lock to prevent concurrent pushDocument race conditions.
   Completer<void>? _pushLock;
+
+  /// Sequential sync lock to prevent concurrent syncAll race conditions.
+  Completer<void>? _syncLock;
+
+  /// Lock for pushAll specifically to prevent overlap
+  Completer<void>? _pushAllLock;
 
   /// Last authentication error message for UI display.
   String? _lastAuthError;
@@ -156,6 +181,80 @@ class SyncService {
     }
   }
 
+  Future<bool> _webAuthorize({bool silent = false}) async {
+    try {
+      const tokenKey = 'drive_auth_token';
+      const expiryKey = 'drive_auth_expiry';
+
+      // 1. Try restoring from cache on silent reauth
+      if (silent && _storage != null) {
+        final cachedToken = _storage!.getSetting<String>(tokenKey);
+        final expiryStr = _storage!.getSetting<String>(expiryKey);
+        if (cachedToken != null && expiryStr != null) {
+          final expiry = DateTime.tryParse(expiryStr);
+          if (expiry != null && DateTime.now().toUtc().add(const Duration(minutes: 5)).isBefore(expiry)) {
+            debugPrint('[Sync] Restored cached token (expires $expiry)');
+            _driveApi = drive.DriveApi(_TokenAuthClient(cachedToken));
+            _currentEmail = _storage!.getSetting<String>('drive_auth_email') ?? 'Web User';
+            _rootFolderId = await _getOrCreateFolder('Organote');
+            stateNotifier.value = SyncState.connected;
+            _lastAuthError = null;
+            return true;
+          }
+        }
+        debugPrint('[Sync] Silent auth failed: Cache empty or expired');
+        return false; // Prevent popup blocker crash
+      }
+
+      final authClient = _googleSignIn.authorizationClient;
+      final scopes = List<String>.from(_driveScopes)..add('email');
+      
+      GoogleSignInClientAuthorization? authz;
+      
+      if (silent) {
+        authz = await authClient.authorizationForScopes(scopes);
+      } else {
+        authz = await authClient.authorizeScopes(scopes);
+      }
+      
+      if (authz == null) {
+        if (!silent) _lastAuthError = 'Drive authorization was denied.';
+        return false;
+      }
+      
+      final httpClient = authz.authClient(scopes: scopes);
+      _driveApi = drive.DriveApi(httpClient);
+      
+      try {
+        final response = await httpClient.get(Uri.parse('https://www.googleapis.com/oauth2/v3/userinfo'));
+        if (response.statusCode == 200) {
+          final data = json.decode(response.body);
+          _currentEmail = data['email'];
+        }
+      } catch (_) {
+        _currentEmail = 'Web User';
+      }
+      
+      if (_storage != null) {
+        await _storage!.setSetting(tokenKey, authz.accessToken);
+        // Google access tokens live for 3600 seconds
+        await _storage!.setSetting(expiryKey, DateTime.now().toUtc().add(const Duration(seconds: 3500)).toIso8601String());
+        await _storage!.setSetting('drive_auth_email', _currentEmail);
+      }
+
+      _rootFolderId = await _getOrCreateFolder('Organote');
+      stateNotifier.value = SyncState.connected;
+      _lastAuthError = null;
+      return true;
+    } catch (e) {
+      if (!silent) {
+        _lastAuthError = 'Drive authorization error: $e';
+        debugPrint('[Sync] Web auth error: $e');
+      }
+      return false;
+    }
+  }
+
   // ── Authentication ──────────────────────────────────────────────────
 
   /// Sign in to Google and initialize Drive API.
@@ -166,43 +265,28 @@ class SyncService {
       await _ensureInitialized();
 
       if (kIsWeb) {
-        // On web: register auth listener (fire-and-forget).
-        // State changes are pushed from the listener, no Completer needed.
-        _authSubscription?.cancel();
-        _authSubscription = _googleSignIn.authenticationEvents.listen(
-          (event) async {
-            if (event is GoogleSignInAuthenticationEventSignIn) {
-              final account = event.user;
-              final result = await _obtainDriveClientFrom(account);
-              if (result) {
-                Future.microtask(() => syncAll());
-              } else {
-                stateNotifier.value = SyncState.error;
-              }
-            }
-          },
-          onError: (e) {
-            debugPrint('[Sync] Auth stream error: $e');
-            stateNotifier.value = SyncState.error;
-            _lastAuthError = 'Auth stream error: $e';
-          },
-        );
-        // Trigger lightweight check — if cached session exists, the listener fires
-        _googleSignIn.attemptLightweightAuthentication();
-        // Return true — the listener will handle state
-        return true;
+        final result = await _webAuthorize(silent: false);
+        if (!result) {
+          stateNotifier.value = SyncState.error;
+        }
+        return result;
       }
 
-      // Non-web: use standard authenticate()
+      // Use standard authenticate for OTHER platforms.
       final account = await _googleSignIn.authenticate(
         scopeHint: _driveScopes,
       );
-
-      final result = await _obtainDriveClientFrom(account);
-      if (result) {
-        Future.microtask(() => syncAll());
+      
+      if (account != null) {
+        final result = await _obtainDriveClientFrom(account, silent: false);
+        if (!result) {
+          stateNotifier.value = SyncState.error;
+        }
+        return result;
+      } else {
+        stateNotifier.value = SyncState.disconnected;
+        return false;
       }
-      return result;
     } on GoogleSignInException catch (e) {
       if (e.code == GoogleSignInExceptionCode.canceled) {
         debugPrint('Google Sign-In cancelled by user');
@@ -222,19 +306,15 @@ class SyncService {
   }
 
   /// Try to silently reconnect (e.g., on app restart).
-  /// Uses attemptLightweightAuthentication for non-interactive silent auth.
-  /// Combined with _obtainDriveClientFrom(silent: true), this avoids any popup.
-  /// On web, returns false (auth is handled by the GSI button).
   Future<bool> tryReconnect({required StorageService storage}) async {
     _storage = storage;
     try {
       await _ensureInitialized();
 
-      // On web, don't auto-trigger the sign-in UI.
-      if (kIsWeb) return false;
+      if (kIsWeb) {
+        return await _webAuthorize(silent: true);
+      }
 
-      // On mobile: attemptLightweightAuthentication restores cached sessions
-      // without forcing any interactive UI or Credential Manager popup.
       final maybeFuture = _googleSignIn.attemptLightweightAuthentication();
       if (maybeFuture == null) return false;
 
@@ -275,8 +355,13 @@ class SyncService {
 
   /// Schedule a debounced pull after a push to detect concurrent edits.
   void _scheduleSyncAfterPush() {
+    if (stateNotifier.value == SyncState.syncing || _syncLock != null) return;
     _syncDebounceTimer?.cancel();
-    _syncDebounceTimer = Timer(_syncDebounce, () => pullAll());
+    _syncDebounceTimer = Timer(_syncDebounce, () {
+      if (stateNotifier.value != SyncState.syncing) {
+        pullAll();
+      }
+    });
   }
 
   // ── Push operations ─────────────────────────────────────────────────
@@ -296,7 +381,7 @@ class SyncService {
   }
 
   /// Push a single document to Google Drive with retry.
-  Future<void> pushDocument(String path, String content) async {
+  Future<void> pushDocument(String path, String content, {bool skipSync = false}) async {
     if (_driveApi == null || _rootFolderId == null) return;
 
     await _acquirePushLock();
@@ -330,7 +415,9 @@ class SyncService {
           }
 
           debugPrint('[Sync] Pushed: $path');
-          _scheduleSyncAfterPush();
+          if (!skipSync) {
+            _scheduleSyncAfterPush();
+          }
           return; // Success — exit retry loop
         } catch (e) {
           debugPrint('[Sync] pushDocument attempt ${attempt + 1} failed: $e');
@@ -371,8 +458,15 @@ class SyncService {
   /// P3.4: Batched in groups of 5 using Future.wait().
   Future<void> pushAll() async {
     if (_driveApi == null || _storage == null) return;
+    if (_syncLock != null || _pushAllLock != null) {
+      debugPrint('[Sync] pushAll cancelled: already syncing/pushing');
+      return;
+    }
 
-    final tasks = <MapEntry<String, String>>[];
+    _pushAllLock = Completer<void>();
+    try {
+      final tasks = <MapEntry<String, String>>[];
+
 
     // Collect templates
     final templates = _storage!.getTemplates();
@@ -388,18 +482,25 @@ class SyncService {
       tasks.add(MapEntry(safePath, entry.value));
     }
 
-    // Process in batches of 5
-    for (var i = 0; i < tasks.length; i += 5) {
-      final batch = tasks.sublist(i, min(i + 5, tasks.length));
-      await Future.wait(
-        batch.map((e) => pushDocument(e.key, e.value)),
-      );
+    // Process sequentially to avoid _pushLock bottlenecks
+    for (final task in tasks) {
+      await pushDocument(task.key, task.value, skipSync: true);
+    }
+    _scheduleSyncAfterPush();
+    } finally {
+      final lock = _pushAllLock;
+      _pushAllLock = null;
+      lock?.complete();
     }
   }
 
   /// Pull all remote docs from Drive and overwrite local.
   /// Now delegates to syncAll() for proper reconciliation.
   Future<void> pullAll() async {
+    if (_syncLock != null) {
+      debugPrint('[Sync] pullAll cancelled: sync already in progress');
+      return;
+    }
     await syncAll();
   }
 
@@ -413,6 +514,19 @@ class SyncService {
   /// - Skip unchanged files via timestamp comparison (P1.3)
   Future<void> syncAll() async {
     if (_driveApi == null || _storage == null || _rootFolderId == null) return;
+
+    if (_syncLock != null) {
+      debugPrint('[Sync] syncAll overlapped - waiting for current sync...');
+      await _syncLock!.future;
+      return;
+    }
+    
+    if (_pushAllLock != null) {
+      // wait for pushAll to finish to avoid conflicts
+      await _pushAllLock!.future;
+    }
+
+    _syncLock = Completer<void>();
 
     final wasState = stateNotifier.value;
     stateNotifier.value = SyncState.syncing;
@@ -590,10 +704,10 @@ class SyncService {
               remoteFile.id!,
             ));
             debugPrint('[Sync] Trashed on Drive (local deletion): $path');
+            await ledger.removeEntry(path);
           } catch (e) {
             debugPrint('[Sync] Failed to trash on Drive: $e');
           }
-          await ledger.removeEntry(path);
         }
 
         // ── Case 5: In ledger, MISSING from remote → remote deletion ──
@@ -668,6 +782,10 @@ class SyncService {
       debugPrint('[Sync] syncAll error: $e');
       stateNotifier.value = SyncState.error;
       _lastAuthError = 'Sync failed: $e';
+    } finally {
+      final lock = _syncLock;
+      _syncLock = null;
+      lock?.complete();
     }
   }
 
@@ -956,11 +1074,15 @@ class SyncService {
     } on AccessDeniedException catch (_) {
       debugPrint('[Sync] 401 — attempting token refresh...');
       try {
-        // attemptLightweightAuthentication is non-interactive on all platforms
-        final maybeFuture = _googleSignIn.attemptLightweightAuthentication();
-        final account = maybeFuture != null ? await maybeFuture : null;
-        if (account != null) {
-          await _obtainDriveClientFrom(account, silent: true);
+        if (kIsWeb) {
+          await _webAuthorize(silent: true);
+        } else {
+          // attemptLightweightAuthentication is non-interactive on all platforms
+          final maybeFuture = _googleSignIn.attemptLightweightAuthentication();
+          final account = maybeFuture != null ? await maybeFuture : null;
+          if (account != null) {
+            await _obtainDriveClientFrom(account, silent: true);
+          }
         }
         return await action();
       } catch (retryError) {
@@ -974,7 +1096,6 @@ class SyncService {
   void dispose() {
     stopPolling();
     _syncDebounceTimer?.cancel();
-    _authSubscription?.cancel();
     signOut();
     _instance = null;
   }
