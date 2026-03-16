@@ -11,6 +11,10 @@ import 'package:extension_google_sign_in_as_googleapis_auth/extension_google_sig
 import 'package:shared_preferences/shared_preferences.dart';
 import 'package:http/http.dart' as http;
 
+import 'storage_service.dart';
+import 'sync_ledger.dart';
+import 'fs_interop.dart';
+
 class _TokenAuthClient extends http.BaseClient {
   final String _accessToken;
   final http.Client _inner = http.Client();
@@ -29,10 +33,6 @@ class _TokenAuthClient extends http.BaseClient {
     super.close();
   }
 }
-
-import 'storage_service.dart';
-import 'sync_ledger.dart';
-import 'fs_interop.dart';
 
 /// Callback type for notifying the UI about remote changes.
 typedef OnRemoteChange = void Function();
@@ -432,18 +432,35 @@ class SyncService {
   }
 
   /// Push a deletion to Google Drive with retry.
+  /// Uses soft-delete (trash) so syncAll can detect remote deletions.
+  /// Also removes the sync ledger entry so the file isn't re-uploaded.
   Future<void> pushDeletion(String path) async {
     if (_driveApi == null || _rootFolderId == null) return;
 
+    // Normalize path to always include .md
+    final safePath = path.endsWith('.md') ? path : '$path.md';
+
     for (int attempt = 0; attempt < _maxRetries; attempt++) {
       try {
-        final parentId = await _ensureFolderPath(path);
-        final fileName = path.split('/').last;
+        final parentId = await _ensureFolderPath(safePath);
+        final fileName = safePath.split('/').last;
         final existing = await _findFile(fileName, parentId);
         if (existing != null) {
-          await _withRetryOn401(() => _driveApi!.files.delete(existing.id!));
+          // Soft-delete (trash) for consistency with syncAll Case 4/5
+          await _withRetryOn401(() => _driveApi!.files.update(
+            drive.File()..trashed = true,
+            existing.id!,
+          ));
         }
-        debugPrint('[Sync] Deleted remotely: $path');
+
+        // Remove sync ledger entry so the deletion is recognized
+        try {
+          final ledger = SyncLedger();
+          await ledger.init();
+          await ledger.removeEntry(safePath);
+        } catch (_) {}
+
+        debugPrint('[Sync] Trashed remotely: $safePath');
         return;
       } catch (e) {
         debugPrint('[Sync] pushDeletion attempt ${attempt + 1} failed: $e');
@@ -1067,7 +1084,8 @@ class SyncService {
   }
 
   /// P1.5: Retry a Drive API call on 401 (token expired).
-  /// Re-authenticates silently and reconstructs the DriveApi client.
+  /// Re-authenticates and reconstructs the DriveApi client.
+  /// On web: tries silent first, falls back to interactive if needed.
   Future<T> _withRetryOn401<T>(Future<T> Function() action) async {
     try {
       return await action();
@@ -1075,7 +1093,19 @@ class SyncService {
       debugPrint('[Sync] 401 — attempting token refresh...');
       try {
         if (kIsWeb) {
-          await _webAuthorize(silent: true);
+          // Try silent first (cached token)
+          final silentOk = await _webAuthorize(silent: true);
+          if (!silentOk) {
+            // Cached token expired — request fresh token interactively
+            debugPrint('[Sync] Silent refresh failed, trying interactive...');
+            final interactiveOk = await _webAuthorize(silent: false);
+            if (!interactiveOk) {
+              debugPrint('[Sync] Interactive auth also failed');
+              stateNotifier.value = SyncState.error;
+              _lastAuthError = 'Session expired. Please sign in again.';
+              rethrow;
+            }
+          }
         } else {
           // attemptLightweightAuthentication is non-interactive on all platforms
           final maybeFuture = _googleSignIn.attemptLightweightAuthentication();
